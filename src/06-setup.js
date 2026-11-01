@@ -42,7 +42,7 @@ const Setup = {
       const r = this.result, m = this.methods(), mi = this.methodIndex();
       b.innerHTML = `<div class="sIcon">⚙️</div><h2>Resistance test</h2>
         <p>Pedal at an easy, steady pace. Ascent sets the bike <b>light</b> for 5 seconds, then <b>heavy</b> for 6 seconds. You tell it whether you felt the change.</p>
-        <div class="tLive"><div><b id="tCadL">0</b><small>RPM</small></div><div><b id="tPhase">–</b><small>NOW</small></div><div><b id="tLvlL">–</b><small>LEVEL SENT</small></div></div>
+        <div class="tLive"><div><b id="tCadL">0</b><small>RPM</small></div><div><b id="tPhase">–</b><small>NOW</small></div><div><b id="tLvlL">–</b><small>SENT → BIKE SAYS</small></div></div>
         <div class="tBar"><i id="tProg"></i></div>
         <p class="note" style="margin-top:8px">Method ${mi + 1} of ${m.length}: <b>${esc(this.methodLabel(m[mi]))}</b> → ${esc(BLE.links.filter(l => (m[mi] || [''])[0] === 'fitshow' ? l.fsWrite : l.ftmsCp).map(l => l.name).join(', ') || '–')}</p>
         <p class="tMsg" id="tMsg">${r ? r.msg : 'Start pedalling, then tap Start test.'}</p>
@@ -102,13 +102,13 @@ const Setup = {
   live() {
     if ($('#setup').hidden) return;
     if (this.step === 0 || this.step === 1) { const el = $('#sHrList'); if (el) el.innerHTML = this.hrList(); const n = $('#sNext'); if (this.step === 1 && n && BLE.hr.some(h => h.bpm)) { n.disabled = false; n.classList.remove('off'); } return; }
-    if (this.step === 2) { const d = BLE.data, fresh = performance.now() - d.t < 3500; $('#tCadL') && ($('#tCadL').textContent = fresh ? Math.round(d.cadence) : 0, $('#tLvlL').textContent = this.testLevel || '–', $('#tPhase').textContent = this.phase || '–'); }
+    if (this.step === 2) { const d = BLE.data, fresh = performance.now() - d.t < 3500; $('#tCadL') && ($('#tCadL').textContent = fresh ? Math.round(d.cadence) : 0, $('#tLvlL').textContent = (BLE.bike?.protocol === 'ftms-sim' ? (this.phase === 'HEAVY' ? '12%' : '0%') : (this.testLevel || '–')) + ' → ' + (d.level || '–'), $('#tPhase').textContent = this.phase || '–'); }
   },
 
-  methods() { const b = BLE.bike, m = []; if (b?.fsWrite) m.push(['fitshow', 'kinomap'], ['fitshow', 'clean']); if (b?.ftmsCp) m.push(['ftms-level', 'kinomap'], ['ftms-sim', 'kinomap']); return m; },
-  methodLabel(x) { return !x ? '–' : x[0] === 'fitshow' ? 'FitShow, ' + (x[1] === 'clean' ? 'clean table' : 'Kinomap table') : x[0] === 'ftms-level' ? 'FTMS resistance level' : 'FTMS gradient simulation'; },
+  methods() { const b = BLE.bike, m = []; if (b?.ftmsCp) m.push(['ftms-sim', 'kinomap'], ['ftms-level', 'kinomap'], ['ftms-level10', 'kinomap']); if (BLE.links.some(l => l.fsWrite && !l.aa)) m.push(['fitshow', 'kinomap'], ['fitshow', 'clean']); return m; },
+  methodLabel(x) { return !x ? '–' : x[0] === 'fitshow' ? 'FitShow, ' + (x[1] === 'clean' ? 'clean table' : 'Kinomap table') : x[0] === 'ftms-level' ? 'FTMS resistance level' : x[0] === 'ftms-level10' ? 'FTMS resistance level (×10 format)' : 'FTMS gradient simulation (like Zwift)'; },
   methodIndex() { const m = this.methods(), p = BLE.bike?.protocol, t = Settings.get().fsTable; const i = m.findIndex(([a, b]) => a === p && (a !== 'fitshow' || b === t)); return Math.max(0, i); },
-  applyMethod(x) { if (!x) return; Settings.set({ protocol: x[0], fsTable: x[1] }); if (BLE.bike) BLE.bike.protocol = x[0]; if (x[0].startsWith('ftms')) { BLE.ftmsWrite([0x00]); if (x[0] === 'ftms-sim') BLE.ftmsWrite([0x07]); } },
+  applyMethod(x) { if (!x) return; Settings.set({ protocol: x[0], fsTable: x[1] }); if (BLE.bike) BLE.bike.protocol = x[0]; if (x[0].startsWith('ftms') && !BLE.hasControl) BLE.takeControl(); },
   nextMethod() { const m = this.methods(), nx = m[this.methodIndex() + 1]; if (nx) { this.applyMethod(nx); return true; } return false; },
   sendTest(level, grade) { this.testLevel = level; if (BLE.bike?.protocol === 'ftms-sim') { BLE.lastSendT = 0; BLE.setSimGrade(grade); } else BLE.setLevel(level, true); },
 
@@ -124,13 +124,14 @@ const Setup = {
       while (performance.now() - t0 < secs * 1000) { await wait(250); const f = (performance.now() - t0) / (secs * 1000); prog(f0 + (f1 - f0) * f); msg(`${label}: ${BLE.bike?.protocol === 'ftms-sim' ? grade + ' % gradient' : 'level ' + level}. Pedal steadily.`); if (f > 0.4) { const d = BLE.data; if (d.cadence > 20) out.push({ p: d.power, c: d.cadence, l: d.level }); } if (Math.abs(f - 0.35) < 0.03) this.sendTest(level, grade); }
       const n = out.length || 1; return { p: out.reduce((a, x) => a + x.p, 0) / n, c: out.reduce((a, x) => a + x.c, 0) / n, l: out.length ? out[out.length - 1].l : 0 };
     };
-    const A = await phase(lo, 0, 'LIGHT', 5, 0, 0.45), B = await phase(hi, 10, 'HEAVY', 6, 0.45, 1);
+    if ((BLE.bike?.protocol || '').startsWith('ftms') && !BLE.hasControl) { msg('Asking the bike for control…'); await BLE.takeControl(); }
+    const A = await phase(lo, 0, 'LIGHT', 5, 0, 0.45), B = await phase(hi, 12, 'HEAVY', 6, 0.45, 1);
     this.sendTest(S.flatLevel, 0); this.phase = 'done'; prog(1); Settings.set({ rawLog: raw });
-    const levelEcho = B.l && Math.abs(B.l - hi) <= 1;
+    const levelEcho = B.l && A.l && (B.l - A.l >= 2);
     const ratio = A.c > 0 && A.p > 0 ? (B.p / B.c) / (A.p / A.c) : 0; this.lastRatio = ratio;
     BLE.addLog('··', `test ${this.methodLabel([BLE.bike.protocol, Settings.get().fsTable])}: L${lo} ${A.p.toFixed(0)}W@${A.c.toFixed(0)} bike L${A.l} | L${hi} ${B.p.toFixed(0)}W@${B.c.toFixed(0)} bike L${B.l} | watts/rev ratio ${ratio.toFixed(2)}`);
     this.running = false;
-    this.result = levelEcho ? { state: 'ok', msg: `✓ The bike confirmed the level change (${lo} → ${hi}).` }
+    this.result = levelEcho ? { state: 'ok', msg: `✓ The bike reported its resistance going from ${A.l} to ${B.l}.` }
       : { state: 'ask', msg: 'Did the pedals get noticeably heavier in the HEAVY phase?' };
     this.render();
   },

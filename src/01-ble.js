@@ -77,18 +77,15 @@ const BLE = {
     return this.bike;
   },
 
+  // One GATT operation at a time: Bluefy (iOS) fails overlapping writes with a bare error ("2").
+  _q: Promise.resolve(),
+  gatt(fn) { const run = this._q.then(fn, fn); this._q = run.catch(() => {}); return run; },
+
   async setupLink(L) {
     L.server = await L.device.gatt.connect();
     this.addLog('··', `connected to ${L.name}`);
-    try {
-      const svc = await L.server.getPrimaryService(FITSHOW_SVC);
-      L.fsWrite = await svc.getCharacteristic(FITSHOW_WRITE);
-      const n = await svc.getCharacteristic(FITSHOW_NOTIFY);
-      n.addEventListener('characteristicvaluechanged', e => this.onFitShow(new Uint8Array(e.target.value.buffer), L));
-      await n.startNotifications();
-      this.addLog('··', L.name + ': FitShow FFF0 found');
-      await this.fitshowInit(L);
-    } catch (e) { this.addLog('··', L.name + ': no FitShow service'); }
+    L.aa = false; L.fsClassic = false;
+    // FTMS first (standard; this is what Zwift uses)
     try {
       const svc = await L.server.getPrimaryService(FTMS_SVC);
       const d = await svc.getCharacteristic(FTMS_BIKE_DATA);
@@ -96,31 +93,76 @@ const BLE = {
       await d.startNotifications();
       try {
         L.ftmsCp = await svc.getCharacteristic(FTMS_CP);
-        L.ftmsCp.addEventListener('characteristicvaluechanged', e => this.addLog('<<', L.name + ' CP ' + hex(new Uint8Array(e.target.value.buffer))));
+        L.ftmsCp.addEventListener('characteristicvaluechanged', e => this.onCp(new Uint8Array(e.target.value.buffer), L));
         await L.ftmsCp.startNotifications();
-      } catch (e) { this.addLog('··', L.name + ': FTMS control point unavailable'); }
+      } catch (e) { L.ftmsCp = null; this.addLog('··', L.name + ': FTMS control point unavailable (' + errText(e) + ')'); }
       this.addLog('··', L.name + ': FTMS 1826 found');
     } catch (e) { this.addLog('··', L.name + ': no FTMS service'); }
+    // FitShow channel: listen first; only speak the 02…03 FitShow protocol if the bike talks it
+    try {
+      const svc = await L.server.getPrimaryService(FITSHOW_SVC);
+      L.fsWrite = await svc.getCharacteristic(FITSHOW_WRITE);
+      const n = await svc.getCharacteristic(FITSHOW_NOTIFY);
+      n.addEventListener('characteristicvaluechanged', e => this.onFitShow(new Uint8Array(e.target.value.buffer), L));
+      await n.startNotifications();
+      this.addLog('··', L.name + ': FFF0 channel found');
+      await wait(1500);
+      if (L.aa) this.addLog('··', L.name + ': FFF1 speaks the "aa…aa" protocol, not FitShow 02…03. FitShow commands disabled for this device.');
+      else if (!L.ftmsCp) { L.fsClassic = true; await this.fitshowInit(L); }
+      else this.addLog('··', L.name + ': FFF1 silent; FitShow kept as fallback');
+    } catch (e) { L.fsWrite = null; this.addLog('··', L.name + ': no FitShow service'); }
     await this.chooseProtocol();
     clearInterval(this._poll);
     let k = 0;
-    this._poll = setInterval(() => { // FitShow bikes only stream data while polled
+    this._poll = setInterval(() => { // classic FitShow bikes only stream data while polled
       const pkt = new Uint8Array((k++ % 2) ? [0x02, 0x43, 0x01, 0x42, 0x03] : [0x02, 0x42, 0x42, 0x03]);
-      for (const l of this.links) if (l.fsWrite && l.server?.connected) this.fsWriteTo(l, pkt, true);
-    }, 500);
+      for (const l of this.links) if (l.fsClassic && l.fsWrite && l.server?.connected) this.fsWriteTo(l, pkt, true);
+    }, 1000);
     this.lastLevelSent = 0;
     this.emit();
   },
   async chooseProtocol() {
-    const b = this.facade(), pref = Settings.get().protocol;
-    if (pref === 'fitshow' && b.fsWrite) b.protocol = 'fitshow';
-    else if ((pref === 'ftms-level' || pref === 'ftms-sim') && b.ftmsCp) b.protocol = pref;
+    const b = this.facade(), pref = Settings.get().protocol, fsOk = this.links.some(l => l.fsWrite && !l.aa);
+    if (pref === 'fitshow' && fsOk) b.protocol = 'fitshow';
+    else if (pref.startsWith('ftms') && b.ftmsCp) b.protocol = pref;
     else if (pref === 'none') b.protocol = 'none';
-    else b.protocol = b.fsWrite ? 'fitshow' : (b.ftmsCp ? 'ftms-level' : 'none');
-    if (b.protocol.startsWith('ftms')) await this.ftmsWrite([0x00]).catch(() => {}); // request control
-    if (b.protocol === 'ftms-sim') await this.ftmsWrite([0x07]).catch(() => {}); // start
-    this.addLog('··', 'resistance control: ' + b.protocol + ' → ' + this.links.filter(l => b.protocol === 'fitshow' ? l.fsWrite : l.ftmsCp).map(l => l.name).join(', '));
+    else b.protocol = b.ftmsCp ? 'ftms-sim' : (fsOk ? 'fitshow' : 'none');
+    if (b.protocol.startsWith('ftms')) await this.takeControl();
+    this.addLog('··', 'resistance control: ' + b.protocol + ' → ' + this.links.filter(l => b.protocol === 'fitshow' ? (l.fsWrite && !l.aa) : l.ftmsCp).map(l => l.name).join(', '));
   },
+  // FTMS handshake like Zwift: Request Control (0x00) → wait for 80 00 01 → Start/Resume (0x07)
+  async takeControl() {
+    for (let a = 0; a < 3; a++) {
+      const r = await this.ftmsCmd([0x00]);
+      if (r === 1) { await this.ftmsCmd([0x07]); this.hasControl = true; return true; }
+      await wait(800);
+    }
+    this.hasControl = false; this.addLog('!!', 'FTMS: the bike did not grant control');
+    return false;
+  },
+  onCp(u8, L) {
+    const RES = { 1: 'OK', 2: 'not supported', 3: 'invalid parameter', 4: 'failed', 5: 'control not permitted' };
+    if (u8[0] === 0x80) { this.addLog('<<', `${L.name} CP reply to 0x${u8[1].toString(16).padStart(2, '0')}: ${RES[u8[2]] || u8[2]}`); if (L.cpWait) { L.cpWait(u8[2]); L.cpWait = null; } }
+    else this.addLog('<<', L.name + ' CP ' + hex(u8));
+  },
+  // Send one control-point command to every FTMS link; resolves with the bike's result code (1 = OK) or 0 (no reply)
+  async ftmsCmd(arr, quiet) {
+    const u8 = new Uint8Array(arr); let best = 0;
+    for (const L of this.links.filter(l => l.ftmsCp && l.server?.connected)) {
+      const r = await this.gatt(async () => {
+        if (!quiet) this.addLog('>>', L.name + ' CP ' + hex(u8));
+        const reply = new Promise(res => { L.cpWait = res; setTimeout(() => { if (L.cpWait === res) { L.cpWait = null; res(0); } }, 2500); });
+        const c = L.ftmsCp; let sent = false;
+        for (const fn of [c.writeValueWithResponse, c.writeValue].filter(f => typeof f === 'function')) { try { await fn.call(c, u8); sent = true; break; } catch (e) { this.addLog('!!', L.name + ' CP write failed: ' + errText(e)); } }
+        if (!sent) { L.cpWait = null; return -1; }
+        const code = await reply; if (!code && !quiet) this.addLog('!!', L.name + ' CP: no reply from bike');
+        return code;
+      });
+      best = Math.max(best, r || 0);
+    }
+    return best;
+  },
+  ftmsWrite(arr) { return this.ftmsCmd(arr); },
 
   async fitshowInit(L) {
     const seq = [[0x02,0x42,0x42,0x03],[0x02,0x42,0x42,0x03],[0x02,0x41,0x02,0x43,0x03],[0x02,0x41,0x03,0x42,0x03],
@@ -128,29 +170,16 @@ const BLE = {
       [0x02,0x44,0x0b,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4e,0x03],[0x02,0x44,0x02,0x46,0x03]];
     for (const p of seq) { await this.fsWriteTo(L, new Uint8Array(p)); await wait(120); }
   },
-
-  _fsQueue: Promise.resolve(),
   fsWriteTo(L, u8, quiet) {
     const c = L?.fsWrite; if (!c) return Promise.resolve();
-    this._fsQueue = this._fsQueue.then(async () => {
+    return this.gatt(async () => {
       try {
         if (c.writeValueWithoutResponse) await c.writeValueWithoutResponse(u8); else await c.writeValue(u8);
         if (!quiet) this.addLog('>>', L.name + ' FFF2 ' + hex(u8));
       } catch (e) { if (!quiet) this.addLog('!!', L.name + ' write failed: ' + errText(e)); }
     });
-    return this._fsQueue;
   },
-  fsWrite(u8, quiet) { return Promise.all(this.links.filter(l => l.fsWrite && l.server?.connected).map(l => this.fsWriteTo(l, u8, quiet))); },
-  async ftmsWrite(arr) {
-    const u8 = new Uint8Array(arr);
-    for (const L of this.links.filter(l => l.ftmsCp && l.server?.connected)) {
-      this.addLog('>>', L.name + ' CP ' + hex(u8));
-      const c = L.ftmsCp, ways = [['withResponse', c.writeValueWithResponse], ['writeValue', c.writeValue], ['withoutResponse', c.writeValueWithoutResponse]].filter(x => typeof x[1] === 'function');
-      let done = false;
-      for (const [nm, fn] of (L.cpWay ? ways.filter(w => w[0] === L.cpWay) : ways)) { try { await fn.call(c, u8); L.cpWay = nm; done = true; break; } catch (e) { this.addLog('!!', L.name + ' CP ' + nm + ' failed: ' + errText(e)); } }
-      if (!done) L.cpWay = null;
-    }
-  },
+  fsWrite(u8, quiet) { return Promise.all(this.links.filter(l => l.fsWrite && !l.aa && l.server?.connected).map(l => this.fsWriteTo(l, u8, quiet))); },
 
   // Resistance: level 1..maxLevel. Throttled; only sends on change.
   setLevel(level, force) {
@@ -162,18 +191,20 @@ const BLE = {
     this.lastLevelSent = level; this.lastSendT = now;
     const b = this.bike; if (!b || !b.server?.connected) return;
     if (b.protocol === 'fitshow') this.fsWrite(fitshowPacket(level, s.fsTable));
-    else if (b.protocol === 'ftms-level') this.ftmsWrite([0x04, level & 0xff]); // FTMS Set Target Resistance (fallback path; raw level)
+    else if (b.protocol === 'ftms-level') this.ftmsCmd([0x04, level & 0xff]); // FTMS Set Target Resistance, raw level (uint8)
+    else if (b.protocol === 'ftms-level10') { const v = level * 10; this.ftmsCmd([0x04, v & 0xff, (v >> 8) & 0xff]); } // FTMS 1.0.1: sint16, 0.1 resolution
   },
   setSimGrade(gradePct) { // only used in ftms-sim mode
     const b = this.bike; if (!b || b.protocol !== 'ftms-sim') return;
     const now = performance.now(); if (now - this.lastSendT < 1000) return; this.lastSendT = now;
     const g = Math.round(gradePct * 100); const buf = new DataView(new ArrayBuffer(7));
     buf.setUint8(0, 0x11); buf.setInt16(1, 0, true); buf.setInt16(3, g, true); buf.setUint8(5, 40); buf.setUint8(6, 51);
-    this.ftmsWrite(Array.from(new Uint8Array(buf.buffer)));
+    this.ftmsCmd(Array.from(new Uint8Array(buf.buffer)));
   },
   resendLevel() { const l = this.pendingLevel || this.lastLevelSent; this.lastLevelSent = 0; if (l) this.setLevel(l, true); },
 
   onFitShow(u8, L) {
+    if (u8[0] === 0xaa && L && !L.aa) { L.aa = true; }
     if (Settings.get().rawLog) this.addLog('<<', (L ? L.name + ' ' : '') + 'FFF1 ' + hex(u8));
     // 15-byte 02 42 02 status frame: [5]=resistance, [6]=cadence, [9..10]=power*10 (LE)
     if (u8.length === 15 && u8[0] === 0x02 && u8[1] === 0x42) {
@@ -208,6 +239,7 @@ const BLE = {
     if (out.power != null) d.power = Math.max(0, out.power);
     if (out.speed != null) d.speed = out.speed;
     if (out.hr) d.bikeHr = out.hr;
+    if (out.level != null) { d.level = out.level; d.levelT = performance.now(); }
     if (out.power != null || out.cadence != null) { d.src = 'ftms'; d.t = performance.now(); }
     this.emit();
   },
