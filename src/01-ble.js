@@ -17,6 +17,7 @@ function fitshowPacket(level, table) {
   const xor = 0x44 ^ 0x05 ^ level ^ b4;
   return new Uint8Array([0x02, 0x44, 0x05, level, b4, xor & 0xff, 0x03]);
 }
+const b_hasService = (b) => !!(b && (b.fsWrite || b.ftmsCp || b.protocol !== 'none'));
 const hex = (u8) => Array.from(u8, b => b.toString(16).padStart(2, '0')).join(' ');
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -36,15 +37,26 @@ const BLE = {
     const el = document.getElementById('bleLog'); if (el && el.offsetParent) { el.textContent = this.log.slice(-120).join('\n'); el.scrollTop = 1e9; }
   },
 
-  async connectBike() {
+  async connectBike(showAll) {
     if (!this.supported) throw new Error('This browser has no Web Bluetooth. Use Chrome or Edge on Mac/Windows/Android, or the Bluefy browser on iPad/iPhone.');
-    const device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }],
-      optionalServices: [FTMS_SVC, FITSHOW_SVC, CPS_SVC, CSC_SVC, 'device_information']
-    });
+    const optionalServices = [FTMS_SVC, FITSHOW_SVC, CPS_SVC, CSC_SVC];
+    let device;
+    this.addLog('··', 'opening Bluetooth chooser' + (showAll ? ' (all devices)' : ''));
+    if (showAll) device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices });
+    else {
+      try {
+        device = await navigator.bluetooth.requestDevice({ filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }], optionalServices });
+      } catch (e) { // some browsers reject filter combinations → fall back to the plain list
+        if (e.name === 'TypeError' || e.name === 'NotSupportedError') { this.addLog('!!', 'filtered chooser failed: ' + e.message); device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices }); }
+        else throw e;
+      }
+    }
+    if (this.bike) this.disconnectBike();
     device.addEventListener('gattserverdisconnected', () => this.onBikeDisconnect());
     this.bike = { device, name: device.name || 'Bike', protocol: 'none' };
-    await this.setupBike();
+    try { await this.setupBike(); }
+    catch (e) { this.addLog('!!', 'setup failed: ' + e.message); const d = this.bike?.device; this.bike = null; try { d?.gatt.disconnect(); } catch (x) {} this.emit(); throw new Error('Found "' + (device.name || 'device') + '" but couldn\u2019t connect: ' + e.message); }
+    if (!b_hasService(this.bike)) { this.addLog('!!', 'no FTMS or FitShow service on ' + device.name); }
     return this.bike;
   },
 
@@ -183,6 +195,7 @@ const BLE = {
   },
 
   async onBikeDisconnect() {
+    if (!this.bike) return;
     this.addLog('!!', 'bike disconnected — reconnecting');
     clearInterval(this._poll); this.emit();
     for (let a = 0; a < 6 && this.bike; a++) {

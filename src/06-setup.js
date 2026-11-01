@@ -15,10 +15,16 @@ const Setup = {
       b.innerHTML = `<div class="sIcon">🚲</div><h2>Connect your bike</h2>
         <p>Turn on the Toputure and pedal for a second to wake it up. Then tap below and choose <b>Toputure TBE5</b> (or <b>FS-…</b>). If a <b>Sport02</b> device shows up, ignore it.</p>
         ${BLE.supported ? `<button class="go" id="sBike">${ok ? '✓ ' + esc(BLE.bike.name) + ' connected' : 'Connect bike'}</button>` : `<div class="warn" style="margin:16px 0">This browser can't use Bluetooth. On iPad/iPhone use <b>Bluefy</b>. On a Mac use <b>Chrome</b>.</div>`}
+        <div class="warn" id="sAvail" hidden style="margin:12px 0;text-align:left">This device reports Bluetooth as <b>off or not allowed</b>. Turn Bluetooth on. On a Mac, allow Chrome under System Settings → Privacy & Security → Bluetooth. On iPad, allow Bluefy under Settings → Bluefy.</div>
+        ${this.bikeErr && !ok ? `<div class="warn" style="margin:12px 0;text-align:left">${esc(this.bikeErr)}</div>` : ''}
+        ${BLE.supported && !ok ? `<button class="lnk" id="sAll">Show all Bluetooth devices</button>` : ''}
         <button class="go ${ok ? '' : 'off'}" id="sNext" ${ok ? '' : 'disabled'}>Next: heart rate</button>
         <button class="lnk" id="sDemo">No bike here: try demo mode</button>`;
-      $('#sBike') && ($('#sBike').onclick = async () => { await App.connectBike(); this.render(); });
-      $('#sNext').onclick = () => this.go(1);
+      const doConnect = async (all) => { const btn = $('#sBike'); if (btn) { btn.disabled = true; btn.textContent = 'Opening Bluetooth…'; } this.bikeErr = await App.connectBike(all); this.render(); };
+      $('#sBike') && ($('#sBike').onclick = () => doConnect(false));
+      $('#sAll') && ($('#sAll').onclick = () => doConnect(true));
+      if (navigator.bluetooth?.getAvailability) navigator.bluetooth.getAvailability().then(ok => { if (!ok && $('#sAvail')) $('#sAvail').hidden = false; }).catch(() => {});
+      $('#sNext').onclick = () => { this.bikeErr = null; this.go(1); };
       $('#sDemo').onclick = () => { App.demoSession = true; this.go(3); };
     } else if (this.step === 1) {
       const live = BLE.hr.filter(h => h.bpm);

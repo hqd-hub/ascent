@@ -132,7 +132,7 @@ h4{font-family:var(--fc);letter-spacing:.12em;text-transform:uppercase;font-size
 .toast.seg{background:rgba(185,28,28,.88)}.toast.pr{background:linear-gradient(90deg,#b45309,#f59e0b);color:#111}.toast.err{background:rgba(127,29,29,.95)}
 .toast.out{opacity:0;transform:translateY(-12px)}
 @keyframes tin{from{opacity:0;transform:scale(.9)}}
-#homeToasts{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60;display:flex;flex-direction:column;align-items:center;gap:8px;font-family:var(--fc)}
+#homeToasts{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:90;width:min(560px,calc(100% - 32px));display:flex;flex-direction:column;align-items:center;gap:8px;font-family:var(--fc)}
 #syncBox{position:absolute;right:12px;bottom:112px;width:300px;padding:14px;display:flex;flex-direction:column;gap:10px;pointer-events:auto;font-family:var(--fn);font-size:14px;z-index:5}
 #syncBox small{color:#a9b4c4}#syncBox input{width:72px;padding:8px}#syncBox .row{gap:6px}
 .detect{display:flex;gap:12px;align-items:center;padding:10px;border-radius:12px;background:#0c121c;border:1px solid var(--line)}.detect img{width:120px;border-radius:8px}.detect small{display:block;color:var(--mut);margin-top:4px;line-height:1.4}
@@ -277,6 +277,7 @@ function fitshowPacket(level, table) {
   const xor = 0x44 ^ 0x05 ^ level ^ b4;
   return new Uint8Array([0x02, 0x44, 0x05, level, b4, xor & 0xff, 0x03]);
 }
+const b_hasService = (b) => !!(b && (b.fsWrite || b.ftmsCp || b.protocol !== 'none'));
 const hex = (u8) => Array.from(u8, b => b.toString(16).padStart(2, '0')).join(' ');
 const wait = (ms) => new Promise(r => setTimeout(r, ms));
 
@@ -296,15 +297,26 @@ const BLE = {
     const el = document.getElementById('bleLog'); if (el && el.offsetParent) { el.textContent = this.log.slice(-120).join('\n'); el.scrollTop = 1e9; }
   },
 
-  async connectBike() {
+  async connectBike(showAll) {
     if (!this.supported) throw new Error('This browser has no Web Bluetooth. Use Chrome or Edge on Mac/Windows/Android, or the Bluefy browser on iPad/iPhone.');
-    const device = await navigator.bluetooth.requestDevice({
-      filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }],
-      optionalServices: [FTMS_SVC, FITSHOW_SVC, CPS_SVC, CSC_SVC, 'device_information']
-    });
+    const optionalServices = [FTMS_SVC, FITSHOW_SVC, CPS_SVC, CSC_SVC];
+    let device;
+    this.addLog('··', 'opening Bluetooth chooser' + (showAll ? ' (all devices)' : ''));
+    if (showAll) device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices });
+    else {
+      try {
+        device = await navigator.bluetooth.requestDevice({ filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }], optionalServices });
+      } catch (e) { // some browsers reject filter combinations → fall back to the plain list
+        if (e.name === 'TypeError' || e.name === 'NotSupportedError') { this.addLog('!!', 'filtered chooser failed: ' + e.message); device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices }); }
+        else throw e;
+      }
+    }
+    if (this.bike) this.disconnectBike();
     device.addEventListener('gattserverdisconnected', () => this.onBikeDisconnect());
     this.bike = { device, name: device.name || 'Bike', protocol: 'none' };
-    await this.setupBike();
+    try { await this.setupBike(); }
+    catch (e) { this.addLog('!!', 'setup failed: ' + e.message); const d = this.bike?.device; this.bike = null; try { d?.gatt.disconnect(); } catch (x) {} this.emit(); throw new Error('Found "' + (device.name || 'device') + '" but couldn\u2019t connect: ' + e.message); }
+    if (!b_hasService(this.bike)) { this.addLog('!!', 'no FTMS or FitShow service on ' + device.name); }
     return this.bike;
   },
 
@@ -443,6 +455,7 @@ const BLE = {
   },
 
   async onBikeDisconnect() {
+    if (!this.bike) return;
     this.addLog('!!', 'bike disconnected — reconnecting');
     clearInterval(this._poll); this.emit();
     for (let a = 0; a < 6 && this.bike; a++) {
@@ -1500,11 +1513,12 @@ const App = {
     $$('.hrchip').forEach(c => c.onclick = () => { if (confirmLite('Disconnect ' + c.textContent.trim() + '?')) BLE.removeHR(c.dataset.id); });
     if (this.ride) this.hudDevices();
   },
-  async connectBike() {
-    if (BLE.bike) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return; }
-    try { await BLE.connectBike(); toast('Bike connected · control: ' + BLE.bike.protocol); } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); }
+  async connectBike(showAll) {
+    if (BLE.bike?.server?.connected && !showAll) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return null; }
+    try { await BLE.connectBike(showAll); toast('Bike connected · control: ' + BLE.bike.protocol); return null; }
+    catch (e) { const msg = bleErrorText(e); BLE.addLog('!!', e.name + ': ' + e.message); if (msg) toast(msg, 'err'); return msg; }
   },
-  async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); return h; } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); } },
+  async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); return h; } catch (e) { BLE.addLog('!!', e.name + ': ' + e.message); toast(bleErrorText(e).replace('the bike', 'the device'), 'err'); } },
 
   // ── Routes tab
   viewRoutes(m) {
@@ -1877,6 +1891,14 @@ const BADGES = [
 ];
 function awardBadges(sum, all) { if (sum.demo) return []; const have = store.get('badges', {}), out = []; for (const b of BADGES) if (!have[b.id] && b.test(sum, all.filter(r => !r.demo))) { have[b.id] = Date.now(); out.push(b); } store.set('badges', have); return out; }
 function levelFor(xp) { let n = 1, need = 0; const req = (k) => Math.round(400 * Math.pow(k, 1.35)); while (xp >= need + req(n)) { need += req(n); n++; } return { n, pct: (xp - need) / req(n) * 100, next: need + req(n) }; }
+function bleErrorText(e) {
+  const m = (e && e.message) || String(e);
+  if (/cancel/i.test(m)) return 'No device was chosen. If the bike wasn\u2019t in the list: pedal to wake it up, close the Toputure/FitShow or Kinomap app on your phone (the bike only talks to one app at a time), then try "Show all Bluetooth devices".';
+  if (/adapter|not available|turned off|unavailable/i.test(m)) return 'Bluetooth isn\u2019t available. Turn Bluetooth on. On a Mac: System Settings → Privacy & Security → Bluetooth → allow Chrome. On iPad: Settings → Bluefy → allow Bluetooth.';
+  if (e && e.name === 'SecurityError') return 'The browser blocked Bluetooth here. Open Ascent from https://hqd-hub.github.io/ascent/ and tap the button directly.';
+  if (e && e.name === 'NotFoundError') return 'No matching bike was found. Pedal to wake it, make sure no other app is connected to it, then try "Show all Bluetooth devices". (' + m + ')';
+  return m;
+}
 function download(name, text) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/xml' })); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }
 function confirmLite(msg) { try { return window.confirm(msg); } catch (e) { return true; } }
 function sheet(html, bind, locked) { const s = $('#sheet'); $('#sheetBody').innerHTML = html; s.hidden = false; s.dataset.locked = locked ? 1 : ''; bind && bind($('#sheetBody')); }
@@ -1906,10 +1928,16 @@ const Setup = {
       b.innerHTML = `<div class="sIcon">🚲</div><h2>Connect your bike</h2>
         <p>Turn on the Toputure and pedal for a second to wake it up. Then tap below and choose <b>Toputure TBE5</b> (or <b>FS-…</b>). If a <b>Sport02</b> device shows up, ignore it.</p>
         ${BLE.supported ? `<button class="go" id="sBike">${ok ? '✓ ' + esc(BLE.bike.name) + ' connected' : 'Connect bike'}</button>` : `<div class="warn" style="margin:16px 0">This browser can't use Bluetooth. On iPad/iPhone use <b>Bluefy</b>. On a Mac use <b>Chrome</b>.</div>`}
+        <div class="warn" id="sAvail" hidden style="margin:12px 0;text-align:left">This device reports Bluetooth as <b>off or not allowed</b>. Turn Bluetooth on. On a Mac, allow Chrome under System Settings → Privacy & Security → Bluetooth. On iPad, allow Bluefy under Settings → Bluefy.</div>
+        ${this.bikeErr && !ok ? `<div class="warn" style="margin:12px 0;text-align:left">${esc(this.bikeErr)}</div>` : ''}
+        ${BLE.supported && !ok ? `<button class="lnk" id="sAll">Show all Bluetooth devices</button>` : ''}
         <button class="go ${ok ? '' : 'off'}" id="sNext" ${ok ? '' : 'disabled'}>Next: heart rate</button>
         <button class="lnk" id="sDemo">No bike here: try demo mode</button>`;
-      $('#sBike') && ($('#sBike').onclick = async () => { await App.connectBike(); this.render(); });
-      $('#sNext').onclick = () => this.go(1);
+      const doConnect = async (all) => { const btn = $('#sBike'); if (btn) { btn.disabled = true; btn.textContent = 'Opening Bluetooth…'; } this.bikeErr = await App.connectBike(all); this.render(); };
+      $('#sBike') && ($('#sBike').onclick = () => doConnect(false));
+      $('#sAll') && ($('#sAll').onclick = () => doConnect(true));
+      if (navigator.bluetooth?.getAvailability) navigator.bluetooth.getAvailability().then(ok => { if (!ok && $('#sAvail')) $('#sAvail').hidden = false; }).catch(() => {});
+      $('#sNext').onclick = () => { this.bikeErr = null; this.go(1); };
       $('#sDemo').onclick = () => { App.demoSession = true; this.go(3); };
     } else if (this.step === 1) {
       const live = BLE.hr.filter(h => h.bpm);

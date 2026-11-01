@@ -86,11 +86,12 @@ const App = {
     $$('.hrchip').forEach(c => c.onclick = () => { if (confirmLite('Disconnect ' + c.textContent.trim() + '?')) BLE.removeHR(c.dataset.id); });
     if (this.ride) this.hudDevices();
   },
-  async connectBike() {
-    if (BLE.bike) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return; }
-    try { await BLE.connectBike(); toast('Bike connected · control: ' + BLE.bike.protocol); } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); }
+  async connectBike(showAll) {
+    if (BLE.bike?.server?.connected && !showAll) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return null; }
+    try { await BLE.connectBike(showAll); toast('Bike connected · control: ' + BLE.bike.protocol); return null; }
+    catch (e) { const msg = bleErrorText(e); BLE.addLog('!!', e.name + ': ' + e.message); if (msg) toast(msg, 'err'); return msg; }
   },
-  async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); return h; } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); } },
+  async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); return h; } catch (e) { BLE.addLog('!!', e.name + ': ' + e.message); toast(bleErrorText(e).replace('the bike', 'the device'), 'err'); } },
 
   // ── Routes tab
   viewRoutes(m) {
@@ -463,6 +464,14 @@ const BADGES = [
 ];
 function awardBadges(sum, all) { if (sum.demo) return []; const have = store.get('badges', {}), out = []; for (const b of BADGES) if (!have[b.id] && b.test(sum, all.filter(r => !r.demo))) { have[b.id] = Date.now(); out.push(b); } store.set('badges', have); return out; }
 function levelFor(xp) { let n = 1, need = 0; const req = (k) => Math.round(400 * Math.pow(k, 1.35)); while (xp >= need + req(n)) { need += req(n); n++; } return { n, pct: (xp - need) / req(n) * 100, next: need + req(n) }; }
+function bleErrorText(e) {
+  const m = (e && e.message) || String(e);
+  if (/cancel/i.test(m)) return 'No device was chosen. If the bike wasn\u2019t in the list: pedal to wake it up, close the Toputure/FitShow or Kinomap app on your phone (the bike only talks to one app at a time), then try "Show all Bluetooth devices".';
+  if (/adapter|not available|turned off|unavailable/i.test(m)) return 'Bluetooth isn\u2019t available. Turn Bluetooth on. On a Mac: System Settings → Privacy & Security → Bluetooth → allow Chrome. On iPad: Settings → Bluefy → allow Bluetooth.';
+  if (e && e.name === 'SecurityError') return 'The browser blocked Bluetooth here. Open Ascent from https://hqd-hub.github.io/ascent/ and tap the button directly.';
+  if (e && e.name === 'NotFoundError') return 'No matching bike was found. Pedal to wake it, make sure no other app is connected to it, then try "Show all Bluetooth devices". (' + m + ')';
+  return m;
+}
 function download(name, text) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type: 'application/xml' })); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }
 function confirmLite(msg) { try { return window.confirm(msg); } catch (e) { return true; } }
 function sheet(html, bind, locked) { const s = $('#sheet'); $('#sheetBody').innerHTML = html; s.hidden = false; s.dataset.locked = locked ? 1 : ''; bind && bind($('#sheetBody')); }
