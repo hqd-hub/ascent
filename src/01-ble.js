@@ -3,9 +3,13 @@
 // Resistance via FTMS on this bike is reported as erratic (qdomyos-zwift PR #5354), so the default
 // control path is the FitShow 02 44 05 <level> <b4> <xor> 03 packet on FFF2 — the same family Kinomap uses.
 
-const FITSHOW_SVC = 0xfff0, FITSHOW_NOTIFY = 0xfff1, FITSHOW_WRITE = 0xfff2;
-const FTMS_SVC = 0x1826, FTMS_BIKE_DATA = 0x2ad2, FTMS_CP = 0x2ad9, FTMS_STATUS = 0x2ada;
-const CPS_SVC = 0x1818, CPS_MEAS = 0x2a63, CSC_SVC = 0x1816;
+// Full 128-bit UUID strings: Bluefy (iPad/iPhone) rejects the short numeric/name forms that Chrome accepts.
+const U = (n) => '0000' + n.toString(16).padStart(4, '0') + '-0000-1000-8000-00805f9b34fb';
+const FITSHOW_SVC = U(0xfff0), FITSHOW_NOTIFY = U(0xfff1), FITSHOW_WRITE = U(0xfff2);
+const FTMS_SVC = U(0x1826), FTMS_BIKE_DATA = U(0x2ad2), FTMS_CP = U(0x2ad9), FTMS_STATUS = U(0x2ada);
+const CPS_SVC = U(0x1818), CPS_MEAS = U(0x2a63), CSC_SVC = U(0x1816), HR_SVC = U(0x180d), HR_MEAS = U(0x2a37);
+const errText = (e) => (e && (e.name ? e.name + ': ' : '') + (e.message || e)) || String(e);
+const isCancel = (e) => /cancel/i.test(String(e && e.message || e));
 
 // Byte 4 of the VirtuFit/FitShow 32-level table (verbatim from qdomyos-zwift fitplusbike::forceResistance)
 const FITSHOW_B4 = [0xf9,0xf9,0xfa,0xfb,0xfc,0xfd,0xfe,0xff,0x00,0x00,0x01,0x03,0x03,0x05,0x05,0x06,
@@ -41,16 +45,17 @@ const BLE = {
     if (!this.supported) throw new Error('This browser has no Web Bluetooth. Use Chrome or Edge on Mac/Windows/Android, or the Bluefy browser on iPad/iPhone.');
     const optionalServices = [FTMS_SVC, FITSHOW_SVC, CPS_SVC, CSC_SVC];
     let device;
-    this.addLog('··', 'opening Bluetooth chooser' + (showAll ? ' (all devices)' : ''));
-    if (showAll) device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices });
-    else {
-      try {
-        device = await navigator.bluetooth.requestDevice({ filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }], optionalServices });
-      } catch (e) { // some browsers reject filter combinations → fall back to the plain list
-        if (e.name === 'TypeError' || e.name === 'NotSupportedError') { this.addLog('!!', 'filtered chooser failed: ' + e.message); device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices }); }
-        else throw e;
-      }
+    this.addLog('··', 'opening Bluetooth chooser' + (showAll ? ' (all devices)' : '') + ' · ' + navigator.userAgent.slice(0, 80));
+    const tries = showAll ? [{ acceptAllDevices: true, optionalServices }] : [
+      { filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }], optionalServices },
+      { filters: [{ namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }], optionalServices },
+      { acceptAllDevices: true, optionalServices }, { acceptAllDevices: true }];
+    let lastErr;
+    for (const opt of tries) {
+      try { device = await navigator.bluetooth.requestDevice(opt); break; }
+      catch (e) { lastErr = e; this.addLog('!!', 'chooser failed (' + (opt.acceptAllDevices ? 'all' : 'filtered') + '): ' + errText(e)); if (isCancel(e) || e.name === 'NotFoundError') throw e; }
     }
+    if (!device) throw lastErr;
     if (this.bike) this.disconnectBike();
     device.addEventListener('gattserverdisconnected', () => this.onBikeDisconnect());
     this.bike = { device, name: device.name || 'Bike', protocol: 'none' };
@@ -209,11 +214,13 @@ const BLE = {
   // Heart rate: standard 0x180D — Whoop ("Broadcast Heart Rate"), Apple Watch via HeartCast/BlueHeart/etc., chest straps
   async connectHR() {
     if (!this.supported) throw new Error('No Web Bluetooth in this browser.');
-    const device = await navigator.bluetooth.requestDevice({ filters: [{ services: ['heart_rate'] }] });
+    let device;
+    try { device = await navigator.bluetooth.requestDevice({ filters: [{ services: [HR_SVC] }] }); }
+    catch (e) { this.addLog('!!', 'HR chooser failed: ' + errText(e)); if (isCancel(e) || e.name === 'NotFoundError') throw e; device = await navigator.bluetooth.requestDevice({ acceptAllDevices: true, optionalServices: [HR_SVC] }); }
     const entry = { device, name: device.name || 'HR', bpm: 0, t: 0 };
     const attach = async () => {
       const server = await device.gatt.connect();
-      const c = await (await server.getPrimaryService('heart_rate')).getCharacteristic('heart_rate_measurement');
+      const c = await (await server.getPrimaryService(HR_SVC)).getCharacteristic(HR_MEAS);
       c.addEventListener('characteristicvaluechanged', e => {
         const dv = e.target.value; const fl = dv.getUint8(0);
         entry.bpm = (fl & 1) ? dv.getUint16(1, true) : dv.getUint8(1); entry.t = performance.now(); this.emit();

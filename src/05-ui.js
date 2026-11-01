@@ -466,6 +466,7 @@ function awardBadges(sum, all) { if (sum.demo) return []; const have = store.get
 function levelFor(xp) { let n = 1, need = 0; const req = (k) => Math.round(400 * Math.pow(k, 1.35)); while (xp >= need + req(n)) { need += req(n); n++; } return { n, pct: (xp - need) / req(n) * 100, next: need + req(n) }; }
 function bleErrorText(e) {
   const m = (e && e.message) || String(e);
+  if (/^\s*\d+\s*$/.test(m)) return `The Bluetooth chooser returned error code ${m.trim()}. Tap "Show all Bluetooth devices" and pick the Toputure (or FS-…) from the full list. If that fails too, open Settings, tap "Copy log" and send it to Claude.`;
   if (/cancel/i.test(m)) return 'No device was chosen. If the bike wasn\u2019t in the list: pedal to wake it up, close the Toputure/FitShow or Kinomap app on your phone (the bike only talks to one app at a time), then try "Show all Bluetooth devices".';
   if (/adapter|not available|turned off|unavailable/i.test(m)) return 'Bluetooth isn\u2019t available. Turn Bluetooth on. On a Mac: System Settings → Privacy & Security → Bluetooth → allow Chrome. On iPad: Settings → Bluefy → allow Bluetooth.';
   if (e && e.name === 'SecurityError') return 'The browser blocked Bluetooth here. Open Ascent from https://hqd-hub.github.io/ascent/ and tap the button directly.';
