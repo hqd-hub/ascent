@@ -189,6 +189,13 @@ body.focus .hBot{justify-content:flex-end;pointer-events:none}body.focus .hBot .
 @media (max-width:820px){.dRow.charts,.dRow.ctx{grid-template-columns:1fr}.dRow.charts{min-height:auto}.dC.wide canvas,#dLine{height:160px}.zones{min-height:150px}}
 #dash.single .dRow.ctx{grid-template-columns:1fr}body.focus #toasts{top:auto;bottom:74px}
 .lens{display:flex;flex-wrap:wrap;gap:6px}.lens .sm{min-width:52px;font-size:15px;padding:9px 10px}.lens .sm.on{background:var(--acc);border-color:var(--acc);color:#fff}
+.chip.user{padding:5px 14px 5px 5px}.chip .av,.rider i{display:grid;place-items:center;border-radius:50%;font-style:normal;font-family:var(--fc);font-weight:800;color:#fff}.chip .av{width:28px;height:28px;font-size:16px}
+.riders{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;margin-top:14px}
+.rider{display:flex;flex-direction:column;align-items:center;gap:6px;padding:16px 10px;border-radius:16px;background:var(--card);border:1px solid var(--line);text-align:center}
+.rider i{width:64px;height:64px;font-size:30px}.rider b{font-family:var(--fc);font-size:22px}.rider small{color:var(--mut);font-size:12px}
+button.rider:hover{border-color:var(--acc)}.rider.cur{border-color:var(--acc);box-shadow:0 0 0 1px var(--acc) inset}.rider.add i{background:#1e2838;color:var(--mut);border:1px dashed var(--line)}
+.riders.sm{margin-top:0}.riders.sm .rider i{width:48px;height:48px;font-size:22px}.sm.del{color:#ff9b9b}
+.rForm{text-align:left;margin:16px 0 4px}
 #pausedOv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);font-family:var(--fc);font-size:64px;font-weight:800;letter-spacing:.2em;pointer-events:none}
 @media (max-width:760px){#riders{display:none}.pow b{font-size:44px}.blk{min-width:62px;padding:6px 8px}.blk b{font-size:26px}.hTop{left:12px;transform:none}#gradeBox b{font-size:32px}#tgtBox{top:96px}.hide-s{display:none}}
 </style>
@@ -197,7 +204,7 @@ body.focus .hBot{justify-content:flex-end;pointer-events:none}body.focus .hBot .
 <div id="home">
   <header class="top">
     <div class="logo"><svg viewBox="0 0 32 32"><path d="M2 27 L12 11 L17 18 L22 9 L30 27 Z" fill="#ff5a1f"/><path d="M19.5 13.5 L22 9 L24.6 14.2 L22 13 Z" fill="#fff"/></svg>ASCENT</div>
-    <div class="devs"><button class="chip" id="devSetup">⚙ Start-up check</button><button class="chip" id="devBike"><i class="dot"></i><span>Connect bike</span></button><span id="devHr" class="devs" style="margin:0"></span></div>
+    <div class="devs"><button class="chip user" id="devUser"></button><button class="chip" id="devSetup">⚙ Start-up check</button><button class="chip" id="devBike"><i class="dot"></i><span>Connect bike</span></button><span id="devHr" class="devs" style="margin:0"></span></div>
   </header>
   <div class="warn" id="bleWarn" hidden>This browser has no Web Bluetooth, so it can't talk to the bike or your HR straps. Use <b>Chrome or Edge</b> on Mac / Windows / Android, or the free <b>Bluefy</b> browser on iPad / iPhone. Demo mode works everywhere.</div>
   <nav class="tabs"><button class="tab" data-tab="routes">Routes</button><button class="tab" data-tab="workouts">Workouts</button><button class="tab" data-tab="video">Video rides</button><button class="tab" data-tab="activity">Activity</button><button class="tab" data-tab="settings">Settings</button></nav>
@@ -480,27 +487,79 @@ const BLE = {
 };
 
 // ───────────────────────────── Settings, storage, routes, workouts ─────────────────────────────
+// Storage: per-rider keys live under ascent.u.<id>.*; bike + video sync data is shared by everyone.
+const SHARED = new Set(['users', 'currentUser', 'bike', 'vids', 'lastTest', 'migrated']);
+const isShared = (k) => SHARED.has(k) || k.startsWith('vid.');
+let _uid = null;
+try { _uid = JSON.parse(localStorage.getItem('ascent.currentUser')); } catch (e) {}
 const store = {
-  get(k, d) { try { const v = localStorage.getItem('ascent.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem('ascent.' + k, JSON.stringify(v)); } catch (e) {} }
+  key(k) { return isShared(k) || !_uid ? 'ascent.' + k : 'ascent.u.' + _uid + '.' + k; },
+  prefix() { return _uid ? 'ascent.u.' + _uid + '.' : 'ascent.'; },
+  get(k, d) { try { const v = localStorage.getItem(this.key(k)); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(this.key(k), JSON.stringify(v)); } catch (e) {} }
 };
 
-const DEFAULTS = {
-  name: 'Hasse', weight: 85, ftp: 220, maxHr: 185,
+const BIKE_KEYS = ['maxLevel', 'minLevel', 'protocol', 'fsTable', 'rawLog', 'quality'];
+const RIDER_DEFAULTS = {
+  name: 'Rider', weight: 75, ftp: 180, maxHr: 185,
   difficulty: 60,          // % of real gradient felt (Zwift "trainer difficulty")
   flatLevel: 6,            // bike resistance level on 0 %
   levelsPerPct: 1.6,       // extra levels per 1 % effective gradient
+  hrPrimary: '', voice: true, sound: true, cda: 0.32, crr: 0.005, units: 'metric', screen: '3d', color: '#ff5a1f'
+};
+const BIKE_DEFAULTS = {
   maxLevel: 32, minLevel: 1,
   protocol: 'auto',        // auto | fitshow | ftms-level | ftms-sim | none
   fsTable: 'kinomap',      // kinomap (VirtuFit table, verbatim) | clean (byte4 = 0)
-  hrPrimary: '', voice: true, sound: true, quality: 'medium', rawLog: false,
-  cda: 0.32, crr: 0.005, units: 'metric'
+  rawLog: false, quality: 'medium'
 };
-let _settings = Object.assign({}, DEFAULTS, store.get('settings', {}));
+let _settings = {};
 const Settings = {
+  load() { _settings = Object.assign({}, RIDER_DEFAULTS, BIKE_DEFAULTS, store.get('settings', {}), store.get('bike', {})); const u = _uid && store.get('users', []).find(x => x.id === _uid); if (u) { _settings.name = u.name; _settings.color = u.color; } },
   get: () => _settings,
-  set(p) { _settings = Object.assign({}, _settings, p); store.set('settings', _settings); }
+  set(p) {
+    _settings = Object.assign({}, _settings, p);
+    const rider = {}, bike = store.get('bike', {});
+    for (const [k, v] of Object.entries(_settings)) (BIKE_KEYS.includes(k) ? bike : rider)[k] = v;
+    for (const k of BIKE_KEYS) if (k in p) bike[k] = p[k];
+    store.set('settings', rider); store.set('bike', bike);
+  }
 };
+
+// Riders
+const RIDER_COLORS = ['#ff5a1f', '#e85d75', '#3b82f6', '#22c55e', '#a855f7', '#f59e0b', '#14b8a6'];
+const Users = {
+  list() { return store.get('users', []); },
+  current() { return this.list().find(u => u.id === _uid) || null; },
+  use(id) { _uid = id; try { localStorage.setItem('ascent.currentUser', JSON.stringify(id)); } catch (e) {} Settings.load(); },
+  create(p) {
+    const users = this.list(); const id = 'u' + Date.now().toString(36);
+    const color = p.color || RIDER_COLORS[users.length % RIDER_COLORS.length];
+    users.push({ id, name: p.name, color }); store.set('users', users);
+    this.use(id); Settings.set(Object.assign({}, RIDER_DEFAULTS, p, { color })); return id;
+  },
+  rename(id, name) { const users = this.list(); const u = users.find(x => x.id === id); if (u) { u.name = name; store.set('users', users); } },
+  remove(id) {
+    store.set('users', this.list().filter(u => u.id !== id));
+    try { Object.keys(localStorage).filter(k => k.startsWith('ascent.u.' + id + '.')).forEach(k => localStorage.removeItem(k)); } catch (e) {}
+    if (_uid === id) { _uid = null; try { localStorage.removeItem('ascent.currentUser'); } catch (e) {} }
+  },
+  // One-time: data saved before riders existed becomes the first rider's
+  migrate() {
+    if (store.get('migrated', false) || this.list().length) return;
+    let old = {}; try { old = JSON.parse(localStorage.getItem('ascent.settings') || 'null') || {}; } catch (e) {}
+    const legacy = (() => { try { return Object.keys(localStorage).filter(k => k.startsWith('ascent.') && !k.startsWith('ascent.u.') && !isShared(k.slice(7))); } catch (e) { return []; } })();
+    if (legacy.length) {
+      const id = 'u' + Date.now().toString(36), users = [{ id, name: old.name || 'Hasse', color: RIDER_COLORS[0] }];
+      for (const k of legacy) { try { localStorage.setItem('ascent.u.' + id + '.' + k.slice(7), localStorage.getItem(k)); localStorage.removeItem(k); } catch (e) {} }
+      const bike = {}; for (const k of BIKE_KEYS) if (k in old) bike[k] = old[k];
+      try { localStorage.setItem('ascent.users', JSON.stringify(users)); localStorage.setItem('ascent.bike', JSON.stringify(bike)); } catch (e) {}
+      _uid = null; this.use(id);
+    }
+    store.set('migrated', true);
+  }
+};
+Users.migrate(); if (_uid && !Users.current()) _uid = null; Settings.load();
 
 // Build a profile from [lengthKm, gradePct] pieces; optionally rescale to a published total gain.
 function pieces(list, targetGain) {
@@ -1418,6 +1477,8 @@ const App = {
     document.addEventListener('keydown', e => this.key(e));
     if (!BLE.supported) $('#bleWarn').hidden = false;
     $('#devSetup').onclick = () => Setup.open();
+    $('#devUser').onclick = () => Setup.open();
+    this.onUserChange();
     Setup.open();
   },
   route(id) { if (!this.routeCache[id]) this.routeCache[id] = buildRoute(ROUTES.find(r => r.id === id)); return this.routeCache[id]; },
@@ -1443,7 +1504,7 @@ const App = {
     if (BLE.bike) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return; }
     try { await BLE.connectBike(); toast('Bike connected · control: ' + BLE.bike.protocol); } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); }
   },
-  async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); } },
+  async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); return h; } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); } },
 
   // ── Routes tab
   viewRoutes(m) {
@@ -1622,7 +1683,9 @@ const App = {
   viewSettings(m) {
     const S = Settings.get();
     const f = (k, label, attrs, help) => `<label>${label}<input data-k="${k}" value="${esc(S[k])}" ${attrs}>${help ? `<small>${help}</small>` : ''}</label>`;
-    m.innerHTML = `<div class="cols"><div class="panel form"><h3>Rider</h3>${f('name', 'Name', 'type="text"')}${f('weight', 'Weight (kg)', 'type="number" min="35" max="160"')}${f('ftp', 'FTP (W)', 'type="number" min="60" max="500"', 'Unknown? Do the FTP Ramp Test workout.')}${f('maxHr', 'Max heart rate', 'type="number" min="120" max="220"')}
+    const users = Users.list(), cur = Users.current();
+    m.innerHTML = `<div class="panel"><h3 style="font-family:var(--fc);font-size:20px;margin-bottom:10px">Riders</h3><div class="riders sm">${users.map(u => `<div class="rider ${u.id === cur?.id ? 'cur' : ''}"><i style="background:${u.color}">${esc(u.name.slice(0, 1).toUpperCase())}</i><b>${esc(u.name)}</b>${u.id === cur?.id ? '<small>Riding now</small>' : `<button class="sm" data-switch="${u.id}">Switch</button>`}${users.length > 1 ? `<button class="sm del" data-del="${u.id}">Delete</button>` : ''}</div>`).join('')}<button class="rider add" id="setAddRider"><i>+</i><b>Add rider</b></button></div></div>
+    <div class="cols"><div class="panel form"><h3>${esc(cur?.name || 'Rider')}'s settings</h3>${f('name', 'Name', 'type="text"')}${f('weight', 'Weight (kg)', 'type="number" min="35" max="160"')}${f('ftp', 'FTP (W)', 'type="number" min="60" max="500"', 'Unknown? Do the FTP Ramp Test workout.')}${f('maxHr', 'Max heart rate', 'type="number" min="120" max="220"')}
       <h3>Heart rate</h3><label>Primary HR source<select data-k="hrPrimary"><option value="">Freshest signal</option>${BLE.hr.map(h => `<option ${S.hrPrimary === h.name ? 'selected' : ''}>${esc(h.name)}</option>`).join('')}</select><small>Whoop: Whoop app → Device Settings → Heart Rate Broadcast ON. Apple Watch: watchOS can't broadcast HR over Bluetooth on its own; use an app like HeartCast or BlueHeart, start it on the watch, then connect here.</small></label>
       <h3>Experience</h3><label class="chk"><input type="checkbox" data-k="voice" ${S.voice ? 'checked' : ''}> Voice coach</label><label class="chk"><input type="checkbox" data-k="sound" ${S.sound ? 'checked' : ''}> Wind sound</label>
       <label>Graphics<select data-k="quality">${['low', 'medium', 'high'].map(q => `<option ${S.quality === q ? 'selected' : ''}>${q}</option>`).join('')}</select><small>Use low on an older iPad.</small></label></div>
@@ -1633,11 +1696,14 @@ const App = {
       <label>Test resistance<div class="row">${[1, 8, 16, 24, 32].map(l => `<button class="sm" data-lvl="${l}">${l}</button>`).join('')}</div><small>Pedal and tap — you should feel each step.</small></label>
       <label class="chk"><input type="checkbox" data-k="rawLog" ${S.rawLog ? 'checked' : ''}> Log raw Bluetooth frames</label>
       <pre id="bleLog">${esc(BLE.log.slice(-120).join('\n')) || 'Bluetooth log appears here once the bike connects.'}</pre>
-      <div class="row"><button class="sm" id="copyLog">Copy log</button><button class="sm" id="resetAll">Reset all data</button></div></div></div>`;
-    $$('[data-k]', m).forEach(el => el.onchange = () => { const k = el.dataset.k; let v = el.type === 'checkbox' ? el.checked : el.value; if (el.type === 'number') v = +v; Settings.set({ [k]: v }); toast('Saved'); });
+      <div class="row"><button class="sm" id="copyLog">Copy log</button><button class="sm" id="resetAll">Reset everything (all riders)</button></div></div></div>`;
+    $$('[data-k]', m).forEach(el => el.onchange = () => { const k = el.dataset.k; let v = el.type === 'checkbox' ? el.checked : el.value; if (el.type === 'number') v = +v; Settings.set({ [k]: v }); if (k === 'name' && cur) { Users.rename(cur.id, v); this.onUserChange(); } toast('Saved'); });
+    $$('[data-switch]', m).forEach(b => b.onclick = () => { Users.use(b.dataset.switch); this.onUserChange(); toast('Switched to ' + Users.current().name); });
+    $$('[data-del]', m).forEach(b => b.onclick = () => { const u = users.find(x => x.id === b.dataset.del); if (confirmLite(`Delete ${u.name} and all their rides, PRs and settings?`)) { Users.remove(u.id); if (!Users.current()) Users.use(Users.list()[0].id); this.onUserChange(); } });
+    $('#setAddRider').onclick = () => { Setup.open(); Setup.adding = true; Setup.render(); };
     $$('[data-lvl]', m).forEach(b => b.onclick = () => { if (!BLE.bike) return toast('Connect the bike first', 'err'); BLE.setLevel(+b.dataset.lvl, true); toast('Level ' + b.dataset.lvl + ' sent'); });
     $('#copyLog').onclick = () => { navigator.clipboard?.writeText(BLE.log.join('\n')); toast('Log copied'); };
-    $('#resetAll').onclick = () => { if (confirmLite('Delete all rides, PRs and settings?')) { try { Object.keys(localStorage).filter(k => k.startsWith('ascent.')).forEach(k => localStorage.removeItem(k)); } catch (e) {} location.reload(); } };
+    $('#resetAll').onclick = () => { if (confirmLite('Delete ALL riders, rides, PRs and settings on this device?')) { try { Object.keys(localStorage).filter(k => k.startsWith('ascent.')).forEach(k => localStorage.removeItem(k)); } catch (e) {} location.reload(); } };
   },
 
   ensureWorld(R) {
@@ -1652,6 +1718,11 @@ const App = {
     else Dash.build(R);
     document.body.classList.toggle('focus', data); $('#dash').hidden = !data; $('#btnData').textContent = data ? '3D' : 'DATA';
     $('#freeBox').hidden = true; store.set('screen', R.view);
+  },
+  onUserChange() {
+    const u = Users.current(); const c = $('#devUser');
+    if (c) c.innerHTML = u ? `<i class="av" style="background:${u.color}">${esc(u.name.slice(0, 1).toUpperCase())}</i><span>${esc(u.name)}</span>` : '<span>Choose rider</span>';
+    if (!this.ride) this.show(store.get('tab', 'routes'));
   },
   freeRide() { this.start({ route: this.route('lake'), mode: 'free', focus: true }); },
 
@@ -1757,7 +1828,7 @@ const App = {
     if (R.rec.length < 20) { $('#rideView').hidden = true; $('#home').hidden = false; toast('Ride too short to save'); this.show(this.tab); return; }
     // Persist
     const rides = store.get('rides', []); rides.push(sum); store.set('rides', rides.slice(-200));
-    store.set('rec.' + sum.id, R.rec); const keep = rides.slice(-15).map(r => 'rec.' + r.id); try { Object.keys(localStorage).filter(k => k.startsWith('ascent.rec.') && !keep.includes(k.slice(7))).forEach(k => localStorage.removeItem(k)); } catch (e) {}
+    store.set('rec.' + sum.id, R.rec); const keep = rides.slice(-15).map(r => 'rec.' + r.id); try { Object.keys(localStorage).filter(k => k.startsWith(store.prefix() + 'rec.') && !keep.includes(k.slice(store.prefix().length))).forEach(k => localStorage.removeItem(k)); } catch (e) {}
     let newPb = false;
     if (sum.finished && !R.workout && R.mode !== 'video' && R.mode !== 'free') { const pb = store.get('ghost.' + sum.routeId, null); if (!pb || R.t < pb.time) { newPb = !!pb || true; const s = []; for (let i = 0; i < R.rec.length; i += 2) s.push(R.rec[i].s); store.set('ghost.' + sum.routeId, { time: R.t, s, date: Date.now() }); } }
     const xpGain = sum.dist / 1000 * 20 + sum.gain * 0.6 + sum.time / 60 * 2 + (sum.finished ? 100 : 0); const xp0 = store.get('xp', 0), l0 = levelFor(xp0).n; store.set('xp', xp0 + xpGain); const l1 = levelFor(xp0 + xpGain).n;
@@ -1821,16 +1892,16 @@ window.addEventListener('DOMContentLoaded', () => {
 // ───────────────────────────── Start-up flow: bike → heart rate → resistance test → choose ride ─────────────────────────────
 const Setup = {
   step: 0, result: null, running: false,
-  open() { this.step = BLE.bike?.server?.connected ? 1 : 0; this.result = null; $('#setup').hidden = false; document.body.classList.add('insetup'); this.render(); this._l = () => this.live(); BLE.listeners.add(this._l); },
+  open() { this.step = -1; this.adding = !Users.list().length; this.result = null; $('#setup').hidden = false; document.body.classList.add('insetup'); this.render(); this._l = () => this.live(); BLE.listeners.add(this._l); },
   close() { $('#setup').hidden = true; document.body.classList.remove('insetup'); BLE.listeners.delete(this._l); },
   go(n) { this.step = n; this.render(); },
 
   render() {
-    const steps = ['Bike', 'Heart rate', 'Resistance', 'Ride'];
-    const dots = steps.map((t, i) => `<li class="${i < this.step ? 'done' : i === this.step ? 'on' : ''}"><i>${i < this.step ? '✓' : i + 1}</i>${t}</li>`).join('');
+    const steps = ['Rider', 'Bike', 'Heart rate', 'Resistance', 'Ride'];
+    const dots = steps.map((t, j) => { const i = j - 1; return `<li class="${i < this.step ? 'done' : i === this.step ? 'on' : ''}"><i>${i < this.step ? '✓' : j + 1}</i>${t}</li>`; }).join('');
     const b = $('#setupBody');
     $('#setupSteps').innerHTML = dots;
-    if (this.step === 0) {
+    if (this.step === -1) { this.renderRiders(b); } else if (this.step === 0) {
       const ok = BLE.bike?.server?.connected;
       b.innerHTML = `<div class="sIcon">🚲</div><h2>Connect your bike</h2>
         <p>Turn on the Toputure and pedal for a second to wake it up. Then tap below and choose <b>Toputure TBE5</b> (or <b>FS-…</b>). If a <b>Sport02</b> device shows up, ignore it.</p>
@@ -1844,11 +1915,12 @@ const Setup = {
       const live = BLE.hr.filter(h => h.bpm);
       b.innerHTML = `<div class="sIcon">❤️</div><h2>Connect heart rate</h2>
         <div class="hrHelp"><div><b>Whoop</b><span>Whoop app → Devices → <i>Heart Rate Broadcast</i> ON.</span></div><div><b>Apple Watch</b><span>Open <i>HeartCast</i> or <i>BlueHeart</i> on the watch and start broadcasting.</span></div></div>
+        ${Settings.get().hrPrimary ? `<p class="note" style="margin:0 0 6px">${esc(Users.current()?.name || '')}'s heart-rate device: <b>${esc(Settings.get().hrPrimary)}</b>. It's used first when several are connected.</p>` : ''}
         <div id="sHrList" class="hrList">${this.hrList()}</div>
         <button class="go sec2" id="sHr">${BLE.hr.length ? '+ Add another' : 'Connect Whoop / Apple Watch'}</button>
         <button class="go ${live.length ? '' : 'off'}" id="sNext" ${live.length ? '' : 'disabled'}>Next: test resistance</button>
         <button class="lnk" id="sSkip">Ride without heart rate</button>`;
-      $('#sHr').onclick = async () => { await App.connectHR(); this.render(); };
+      $('#sHr').onclick = async () => { const h = await App.connectHR(); if (h && !Settings.get().hrPrimary) Settings.set({ hrPrimary: h.name }); this.render(); };
       $('#sNext').onclick = () => this.go(2); $('#sSkip').onclick = () => this.go(2);
     } else if (this.step === 2) {
       const r = this.result;
@@ -1876,6 +1948,34 @@ const Setup = {
         </div>`;
       $$('[data-c]', b).forEach(el => el.onclick = () => { const c = el.dataset.c; this.close(); if (c === 'free') App.freeRide(); else App.show(c); });
     }
+  },
+  renderRiders(b) {
+    const users = Users.list(), S = Settings.get();
+    if (this.adding) {
+      b.innerHTML = `<div class="sIcon">👤</div><h2>${users.length ? 'Add a rider' : 'Who are you?'}</h2><p>Each rider keeps their own settings, rides, PRs and badges.</p>
+        <div class="form rForm">
+          <label>Name<input id="nName" type="text" placeholder="e.g. Hasse" autocomplete="off"></label>
+          <div class="row2"><label>Weight (kg)<input id="nW" type="number" min="30" max="160" placeholder="kg"></label><label>FTP (W)<input id="nF" type="number" min="50" max="500" placeholder="Don't know? Leave blank"></label></div>
+          <div class="row2"><label>Max heart rate<input id="nH" type="number" min="120" max="220" placeholder="Blank = 185"></label><label>Preferred screen<select id="nV"><option value="3d">3D world</option><option value="data">Data screen</option></select></label></div>
+          <label>Trainer difficulty <output id="nDV">60 %</output><input type="range" id="nD" min="20" max="100" step="5" value="60"><small>How much of a climb's real gradient you feel. Lower is gentler.</small></label>
+          <small class="note" style="margin:0">No FTP? Ascent starts at an estimate (2.2 W/kg). Do the FTP Ramp Test workout to set it properly.</small>
+        </div>
+        <button class="go" id="nSave">Save rider</button>${users.length ? '<button class="lnk" id="nCancel">Cancel</button>' : ''}`;
+      $('#nD').oninput = (e) => $('#nDV').textContent = e.target.value + ' %';
+      $('#nCancel') && ($('#nCancel').onclick = () => { this.adding = false; this.render(); });
+      $('#nSave').onclick = () => {
+        const name = $('#nName').value.trim(); if (!name) return toast('Enter a name', 'err');
+        const weight = +$('#nW').value || 75; const ftp = +$('#nF').value || Math.round(weight * 2.2 / 5) * 5;
+        Users.create({ name, weight, ftp, maxHr: +$('#nH').value || 185, screen: $('#nV').value, difficulty: +$('#nD').value });
+        store.set('screen', $('#nV').value); this.adding = false; App.onUserChange(); toast('Welcome, ' + name); this.go(BLE.bike?.server?.connected ? 1 : 0);
+      };
+      return;
+    }
+    b.innerHTML = `<div class="sIcon">👥</div><h2>Who's riding?</h2><p>Your settings, rides and PRs are loaded for you.</p>
+      <div class="riders">${users.map(u => { const s = (() => { try { return JSON.parse(localStorage.getItem('ascent.u.' + u.id + '.settings')) || {}; } catch (e) { return {}; } })(); return `<button class="rider ${u.id === Users.current()?.id ? 'cur' : ''}" data-u="${u.id}"><i style="background:${u.color}">${esc(u.name.slice(0, 1).toUpperCase())}</i><b>${esc(u.name)}</b><small>${s.ftp ? s.ftp + ' W FTP' : ''}${s.weight ? ' · ' + s.weight + ' kg' : ''}</small></button>`; }).join('')}
+        <button class="rider add" id="rAdd"><i>+</i><b>Add rider</b><small>New profile</small></button></div>`;
+    $$('[data-u]', b).forEach(el => el.onclick = () => { Users.use(el.dataset.u); App.onUserChange(); this.go(BLE.bike?.server?.connected ? (BLE.hr.some(h => h.bpm) ? 2 : 1) : 0); });
+    $('#rAdd').onclick = () => { this.adding = true; this.render(); };
   },
   hrList() { return BLE.hr.map(h => `<div class="hrRow ${h.bpm ? 'ok' : ''}"><span>${esc(h.name)}</span><b>${h.bpm || '…'}</b><small>${h.bpm ? 'bpm' : 'waiting for signal'}</small></div>`).join('') || '<p class="note">No heart-rate device connected yet.</p>'; },
   live() {

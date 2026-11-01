@@ -63,6 +63,8 @@ const App = {
     document.addEventListener('keydown', e => this.key(e));
     if (!BLE.supported) $('#bleWarn').hidden = false;
     $('#devSetup').onclick = () => Setup.open();
+    $('#devUser').onclick = () => Setup.open();
+    this.onUserChange();
     Setup.open();
   },
   route(id) { if (!this.routeCache[id]) this.routeCache[id] = buildRoute(ROUTES.find(r => r.id === id)); return this.routeCache[id]; },
@@ -88,7 +90,7 @@ const App = {
     if (BLE.bike) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return; }
     try { await BLE.connectBike(); toast('Bike connected · control: ' + BLE.bike.protocol); } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); }
   },
-  async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); } },
+  async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); return h; } catch (e) { if (e.name !== 'NotFoundError') toast(e.message, 'err'); } },
 
   // ── Routes tab
   viewRoutes(m) {
@@ -267,7 +269,9 @@ const App = {
   viewSettings(m) {
     const S = Settings.get();
     const f = (k, label, attrs, help) => `<label>${label}<input data-k="${k}" value="${esc(S[k])}" ${attrs}>${help ? `<small>${help}</small>` : ''}</label>`;
-    m.innerHTML = `<div class="cols"><div class="panel form"><h3>Rider</h3>${f('name', 'Name', 'type="text"')}${f('weight', 'Weight (kg)', 'type="number" min="35" max="160"')}${f('ftp', 'FTP (W)', 'type="number" min="60" max="500"', 'Unknown? Do the FTP Ramp Test workout.')}${f('maxHr', 'Max heart rate', 'type="number" min="120" max="220"')}
+    const users = Users.list(), cur = Users.current();
+    m.innerHTML = `<div class="panel"><h3 style="font-family:var(--fc);font-size:20px;margin-bottom:10px">Riders</h3><div class="riders sm">${users.map(u => `<div class="rider ${u.id === cur?.id ? 'cur' : ''}"><i style="background:${u.color}">${esc(u.name.slice(0, 1).toUpperCase())}</i><b>${esc(u.name)}</b>${u.id === cur?.id ? '<small>Riding now</small>' : `<button class="sm" data-switch="${u.id}">Switch</button>`}${users.length > 1 ? `<button class="sm del" data-del="${u.id}">Delete</button>` : ''}</div>`).join('')}<button class="rider add" id="setAddRider"><i>+</i><b>Add rider</b></button></div></div>
+    <div class="cols"><div class="panel form"><h3>${esc(cur?.name || 'Rider')}'s settings</h3>${f('name', 'Name', 'type="text"')}${f('weight', 'Weight (kg)', 'type="number" min="35" max="160"')}${f('ftp', 'FTP (W)', 'type="number" min="60" max="500"', 'Unknown? Do the FTP Ramp Test workout.')}${f('maxHr', 'Max heart rate', 'type="number" min="120" max="220"')}
       <h3>Heart rate</h3><label>Primary HR source<select data-k="hrPrimary"><option value="">Freshest signal</option>${BLE.hr.map(h => `<option ${S.hrPrimary === h.name ? 'selected' : ''}>${esc(h.name)}</option>`).join('')}</select><small>Whoop: Whoop app → Device Settings → Heart Rate Broadcast ON. Apple Watch: watchOS can't broadcast HR over Bluetooth on its own; use an app like HeartCast or BlueHeart, start it on the watch, then connect here.</small></label>
       <h3>Experience</h3><label class="chk"><input type="checkbox" data-k="voice" ${S.voice ? 'checked' : ''}> Voice coach</label><label class="chk"><input type="checkbox" data-k="sound" ${S.sound ? 'checked' : ''}> Wind sound</label>
       <label>Graphics<select data-k="quality">${['low', 'medium', 'high'].map(q => `<option ${S.quality === q ? 'selected' : ''}>${q}</option>`).join('')}</select><small>Use low on an older iPad.</small></label></div>
@@ -278,11 +282,14 @@ const App = {
       <label>Test resistance<div class="row">${[1, 8, 16, 24, 32].map(l => `<button class="sm" data-lvl="${l}">${l}</button>`).join('')}</div><small>Pedal and tap — you should feel each step.</small></label>
       <label class="chk"><input type="checkbox" data-k="rawLog" ${S.rawLog ? 'checked' : ''}> Log raw Bluetooth frames</label>
       <pre id="bleLog">${esc(BLE.log.slice(-120).join('\n')) || 'Bluetooth log appears here once the bike connects.'}</pre>
-      <div class="row"><button class="sm" id="copyLog">Copy log</button><button class="sm" id="resetAll">Reset all data</button></div></div></div>`;
-    $$('[data-k]', m).forEach(el => el.onchange = () => { const k = el.dataset.k; let v = el.type === 'checkbox' ? el.checked : el.value; if (el.type === 'number') v = +v; Settings.set({ [k]: v }); toast('Saved'); });
+      <div class="row"><button class="sm" id="copyLog">Copy log</button><button class="sm" id="resetAll">Reset everything (all riders)</button></div></div></div>`;
+    $$('[data-k]', m).forEach(el => el.onchange = () => { const k = el.dataset.k; let v = el.type === 'checkbox' ? el.checked : el.value; if (el.type === 'number') v = +v; Settings.set({ [k]: v }); if (k === 'name' && cur) { Users.rename(cur.id, v); this.onUserChange(); } toast('Saved'); });
+    $$('[data-switch]', m).forEach(b => b.onclick = () => { Users.use(b.dataset.switch); this.onUserChange(); toast('Switched to ' + Users.current().name); });
+    $$('[data-del]', m).forEach(b => b.onclick = () => { const u = users.find(x => x.id === b.dataset.del); if (confirmLite(`Delete ${u.name} and all their rides, PRs and settings?`)) { Users.remove(u.id); if (!Users.current()) Users.use(Users.list()[0].id); this.onUserChange(); } });
+    $('#setAddRider').onclick = () => { Setup.open(); Setup.adding = true; Setup.render(); };
     $$('[data-lvl]', m).forEach(b => b.onclick = () => { if (!BLE.bike) return toast('Connect the bike first', 'err'); BLE.setLevel(+b.dataset.lvl, true); toast('Level ' + b.dataset.lvl + ' sent'); });
     $('#copyLog').onclick = () => { navigator.clipboard?.writeText(BLE.log.join('\n')); toast('Log copied'); };
-    $('#resetAll').onclick = () => { if (confirmLite('Delete all rides, PRs and settings?')) { try { Object.keys(localStorage).filter(k => k.startsWith('ascent.')).forEach(k => localStorage.removeItem(k)); } catch (e) {} location.reload(); } };
+    $('#resetAll').onclick = () => { if (confirmLite('Delete ALL riders, rides, PRs and settings on this device?')) { try { Object.keys(localStorage).filter(k => k.startsWith('ascent.')).forEach(k => localStorage.removeItem(k)); } catch (e) {} location.reload(); } };
   },
 
   ensureWorld(R) {
@@ -297,6 +304,11 @@ const App = {
     else Dash.build(R);
     document.body.classList.toggle('focus', data); $('#dash').hidden = !data; $('#btnData').textContent = data ? '3D' : 'DATA';
     $('#freeBox').hidden = true; store.set('screen', R.view);
+  },
+  onUserChange() {
+    const u = Users.current(); const c = $('#devUser');
+    if (c) c.innerHTML = u ? `<i class="av" style="background:${u.color}">${esc(u.name.slice(0, 1).toUpperCase())}</i><span>${esc(u.name)}</span>` : '<span>Choose rider</span>';
+    if (!this.ride) this.show(store.get('tab', 'routes'));
   },
   freeRide() { this.start({ route: this.route('lake'), mode: 'free', focus: true }); },
 
@@ -402,7 +414,7 @@ const App = {
     if (R.rec.length < 20) { $('#rideView').hidden = true; $('#home').hidden = false; toast('Ride too short to save'); this.show(this.tab); return; }
     // Persist
     const rides = store.get('rides', []); rides.push(sum); store.set('rides', rides.slice(-200));
-    store.set('rec.' + sum.id, R.rec); const keep = rides.slice(-15).map(r => 'rec.' + r.id); try { Object.keys(localStorage).filter(k => k.startsWith('ascent.rec.') && !keep.includes(k.slice(7))).forEach(k => localStorage.removeItem(k)); } catch (e) {}
+    store.set('rec.' + sum.id, R.rec); const keep = rides.slice(-15).map(r => 'rec.' + r.id); try { Object.keys(localStorage).filter(k => k.startsWith(store.prefix() + 'rec.') && !keep.includes(k.slice(store.prefix().length))).forEach(k => localStorage.removeItem(k)); } catch (e) {}
     let newPb = false;
     if (sum.finished && !R.workout && R.mode !== 'video' && R.mode !== 'free') { const pb = store.get('ghost.' + sum.routeId, null); if (!pb || R.t < pb.time) { newPb = !!pb || true; const s = []; for (let i = 0; i < R.rec.length; i += 2) s.push(R.rec[i].s); store.set('ghost.' + sum.routeId, { time: R.t, s, date: Date.now() }); } }
     const xpGain = sum.dist / 1000 * 20 + sum.gain * 0.6 + sum.time / 60 * 2 + (sum.finished ? 100 : 0); const xp0 = store.get('xp', 0), l0 = levelFor(xp0).n; store.set('xp', xp0 + xpGain); const l1 = levelFor(xp0 + xpGain).n;

@@ -1,25 +1,77 @@
 // ───────────────────────────── Settings, storage, routes, workouts ─────────────────────────────
+// Storage: per-rider keys live under ascent.u.<id>.*; bike + video sync data is shared by everyone.
+const SHARED = new Set(['users', 'currentUser', 'bike', 'vids', 'lastTest', 'migrated']);
+const isShared = (k) => SHARED.has(k) || k.startsWith('vid.');
+let _uid = null;
+try { _uid = JSON.parse(localStorage.getItem('ascent.currentUser')); } catch (e) {}
 const store = {
-  get(k, d) { try { const v = localStorage.getItem('ascent.' + k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
-  set(k, v) { try { localStorage.setItem('ascent.' + k, JSON.stringify(v)); } catch (e) {} }
+  key(k) { return isShared(k) || !_uid ? 'ascent.' + k : 'ascent.u.' + _uid + '.' + k; },
+  prefix() { return _uid ? 'ascent.u.' + _uid + '.' : 'ascent.'; },
+  get(k, d) { try { const v = localStorage.getItem(this.key(k)); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(this.key(k), JSON.stringify(v)); } catch (e) {} }
 };
 
-const DEFAULTS = {
-  name: 'Hasse', weight: 85, ftp: 220, maxHr: 185,
+const BIKE_KEYS = ['maxLevel', 'minLevel', 'protocol', 'fsTable', 'rawLog', 'quality'];
+const RIDER_DEFAULTS = {
+  name: 'Rider', weight: 75, ftp: 180, maxHr: 185,
   difficulty: 60,          // % of real gradient felt (Zwift "trainer difficulty")
   flatLevel: 6,            // bike resistance level on 0 %
   levelsPerPct: 1.6,       // extra levels per 1 % effective gradient
+  hrPrimary: '', voice: true, sound: true, cda: 0.32, crr: 0.005, units: 'metric', screen: '3d', color: '#ff5a1f'
+};
+const BIKE_DEFAULTS = {
   maxLevel: 32, minLevel: 1,
   protocol: 'auto',        // auto | fitshow | ftms-level | ftms-sim | none
   fsTable: 'kinomap',      // kinomap (VirtuFit table, verbatim) | clean (byte4 = 0)
-  hrPrimary: '', voice: true, sound: true, quality: 'medium', rawLog: false,
-  cda: 0.32, crr: 0.005, units: 'metric'
+  rawLog: false, quality: 'medium'
 };
-let _settings = Object.assign({}, DEFAULTS, store.get('settings', {}));
+let _settings = {};
 const Settings = {
+  load() { _settings = Object.assign({}, RIDER_DEFAULTS, BIKE_DEFAULTS, store.get('settings', {}), store.get('bike', {})); const u = _uid && store.get('users', []).find(x => x.id === _uid); if (u) { _settings.name = u.name; _settings.color = u.color; } },
   get: () => _settings,
-  set(p) { _settings = Object.assign({}, _settings, p); store.set('settings', _settings); }
+  set(p) {
+    _settings = Object.assign({}, _settings, p);
+    const rider = {}, bike = store.get('bike', {});
+    for (const [k, v] of Object.entries(_settings)) (BIKE_KEYS.includes(k) ? bike : rider)[k] = v;
+    for (const k of BIKE_KEYS) if (k in p) bike[k] = p[k];
+    store.set('settings', rider); store.set('bike', bike);
+  }
 };
+
+// Riders
+const RIDER_COLORS = ['#ff5a1f', '#e85d75', '#3b82f6', '#22c55e', '#a855f7', '#f59e0b', '#14b8a6'];
+const Users = {
+  list() { return store.get('users', []); },
+  current() { return this.list().find(u => u.id === _uid) || null; },
+  use(id) { _uid = id; try { localStorage.setItem('ascent.currentUser', JSON.stringify(id)); } catch (e) {} Settings.load(); },
+  create(p) {
+    const users = this.list(); const id = 'u' + Date.now().toString(36);
+    const color = p.color || RIDER_COLORS[users.length % RIDER_COLORS.length];
+    users.push({ id, name: p.name, color }); store.set('users', users);
+    this.use(id); Settings.set(Object.assign({}, RIDER_DEFAULTS, p, { color })); return id;
+  },
+  rename(id, name) { const users = this.list(); const u = users.find(x => x.id === id); if (u) { u.name = name; store.set('users', users); } },
+  remove(id) {
+    store.set('users', this.list().filter(u => u.id !== id));
+    try { Object.keys(localStorage).filter(k => k.startsWith('ascent.u.' + id + '.')).forEach(k => localStorage.removeItem(k)); } catch (e) {}
+    if (_uid === id) { _uid = null; try { localStorage.removeItem('ascent.currentUser'); } catch (e) {} }
+  },
+  // One-time: data saved before riders existed becomes the first rider's
+  migrate() {
+    if (store.get('migrated', false) || this.list().length) return;
+    let old = {}; try { old = JSON.parse(localStorage.getItem('ascent.settings') || 'null') || {}; } catch (e) {}
+    const legacy = (() => { try { return Object.keys(localStorage).filter(k => k.startsWith('ascent.') && !k.startsWith('ascent.u.') && !isShared(k.slice(7))); } catch (e) { return []; } })();
+    if (legacy.length) {
+      const id = 'u' + Date.now().toString(36), users = [{ id, name: old.name || 'Hasse', color: RIDER_COLORS[0] }];
+      for (const k of legacy) { try { localStorage.setItem('ascent.u.' + id + '.' + k.slice(7), localStorage.getItem(k)); localStorage.removeItem(k); } catch (e) {} }
+      const bike = {}; for (const k of BIKE_KEYS) if (k in old) bike[k] = old[k];
+      try { localStorage.setItem('ascent.users', JSON.stringify(users)); localStorage.setItem('ascent.bike', JSON.stringify(bike)); } catch (e) {}
+      _uid = null; this.use(id);
+    }
+    store.set('migrated', true);
+  }
+};
+Users.migrate(); if (_uid && !Users.current()) _uid = null; Settings.load();
 
 // Build a profile from [lengthKm, gradePct] pieces; optionally rescale to a published total gain.
 function pieces(list, targetGain) {

@@ -1,16 +1,16 @@
 // ───────────────────────────── Start-up flow: bike → heart rate → resistance test → choose ride ─────────────────────────────
 const Setup = {
   step: 0, result: null, running: false,
-  open() { this.step = BLE.bike?.server?.connected ? 1 : 0; this.result = null; $('#setup').hidden = false; document.body.classList.add('insetup'); this.render(); this._l = () => this.live(); BLE.listeners.add(this._l); },
+  open() { this.step = -1; this.adding = !Users.list().length; this.result = null; $('#setup').hidden = false; document.body.classList.add('insetup'); this.render(); this._l = () => this.live(); BLE.listeners.add(this._l); },
   close() { $('#setup').hidden = true; document.body.classList.remove('insetup'); BLE.listeners.delete(this._l); },
   go(n) { this.step = n; this.render(); },
 
   render() {
-    const steps = ['Bike', 'Heart rate', 'Resistance', 'Ride'];
-    const dots = steps.map((t, i) => `<li class="${i < this.step ? 'done' : i === this.step ? 'on' : ''}"><i>${i < this.step ? '✓' : i + 1}</i>${t}</li>`).join('');
+    const steps = ['Rider', 'Bike', 'Heart rate', 'Resistance', 'Ride'];
+    const dots = steps.map((t, j) => { const i = j - 1; return `<li class="${i < this.step ? 'done' : i === this.step ? 'on' : ''}"><i>${i < this.step ? '✓' : j + 1}</i>${t}</li>`; }).join('');
     const b = $('#setupBody');
     $('#setupSteps').innerHTML = dots;
-    if (this.step === 0) {
+    if (this.step === -1) { this.renderRiders(b); } else if (this.step === 0) {
       const ok = BLE.bike?.server?.connected;
       b.innerHTML = `<div class="sIcon">🚲</div><h2>Connect your bike</h2>
         <p>Turn on the Toputure and pedal for a second to wake it up. Then tap below and choose <b>Toputure TBE5</b> (or <b>FS-…</b>). If a <b>Sport02</b> device shows up, ignore it.</p>
@@ -24,11 +24,12 @@ const Setup = {
       const live = BLE.hr.filter(h => h.bpm);
       b.innerHTML = `<div class="sIcon">❤️</div><h2>Connect heart rate</h2>
         <div class="hrHelp"><div><b>Whoop</b><span>Whoop app → Devices → <i>Heart Rate Broadcast</i> ON.</span></div><div><b>Apple Watch</b><span>Open <i>HeartCast</i> or <i>BlueHeart</i> on the watch and start broadcasting.</span></div></div>
+        ${Settings.get().hrPrimary ? `<p class="note" style="margin:0 0 6px">${esc(Users.current()?.name || '')}'s heart-rate device: <b>${esc(Settings.get().hrPrimary)}</b>. It's used first when several are connected.</p>` : ''}
         <div id="sHrList" class="hrList">${this.hrList()}</div>
         <button class="go sec2" id="sHr">${BLE.hr.length ? '+ Add another' : 'Connect Whoop / Apple Watch'}</button>
         <button class="go ${live.length ? '' : 'off'}" id="sNext" ${live.length ? '' : 'disabled'}>Next: test resistance</button>
         <button class="lnk" id="sSkip">Ride without heart rate</button>`;
-      $('#sHr').onclick = async () => { await App.connectHR(); this.render(); };
+      $('#sHr').onclick = async () => { const h = await App.connectHR(); if (h && !Settings.get().hrPrimary) Settings.set({ hrPrimary: h.name }); this.render(); };
       $('#sNext').onclick = () => this.go(2); $('#sSkip').onclick = () => this.go(2);
     } else if (this.step === 2) {
       const r = this.result;
@@ -56,6 +57,34 @@ const Setup = {
         </div>`;
       $$('[data-c]', b).forEach(el => el.onclick = () => { const c = el.dataset.c; this.close(); if (c === 'free') App.freeRide(); else App.show(c); });
     }
+  },
+  renderRiders(b) {
+    const users = Users.list(), S = Settings.get();
+    if (this.adding) {
+      b.innerHTML = `<div class="sIcon">👤</div><h2>${users.length ? 'Add a rider' : 'Who are you?'}</h2><p>Each rider keeps their own settings, rides, PRs and badges.</p>
+        <div class="form rForm">
+          <label>Name<input id="nName" type="text" placeholder="e.g. Hasse" autocomplete="off"></label>
+          <div class="row2"><label>Weight (kg)<input id="nW" type="number" min="30" max="160" placeholder="kg"></label><label>FTP (W)<input id="nF" type="number" min="50" max="500" placeholder="Don't know? Leave blank"></label></div>
+          <div class="row2"><label>Max heart rate<input id="nH" type="number" min="120" max="220" placeholder="Blank = 185"></label><label>Preferred screen<select id="nV"><option value="3d">3D world</option><option value="data">Data screen</option></select></label></div>
+          <label>Trainer difficulty <output id="nDV">60 %</output><input type="range" id="nD" min="20" max="100" step="5" value="60"><small>How much of a climb's real gradient you feel. Lower is gentler.</small></label>
+          <small class="note" style="margin:0">No FTP? Ascent starts at an estimate (2.2 W/kg). Do the FTP Ramp Test workout to set it properly.</small>
+        </div>
+        <button class="go" id="nSave">Save rider</button>${users.length ? '<button class="lnk" id="nCancel">Cancel</button>' : ''}`;
+      $('#nD').oninput = (e) => $('#nDV').textContent = e.target.value + ' %';
+      $('#nCancel') && ($('#nCancel').onclick = () => { this.adding = false; this.render(); });
+      $('#nSave').onclick = () => {
+        const name = $('#nName').value.trim(); if (!name) return toast('Enter a name', 'err');
+        const weight = +$('#nW').value || 75; const ftp = +$('#nF').value || Math.round(weight * 2.2 / 5) * 5;
+        Users.create({ name, weight, ftp, maxHr: +$('#nH').value || 185, screen: $('#nV').value, difficulty: +$('#nD').value });
+        store.set('screen', $('#nV').value); this.adding = false; App.onUserChange(); toast('Welcome, ' + name); this.go(BLE.bike?.server?.connected ? 1 : 0);
+      };
+      return;
+    }
+    b.innerHTML = `<div class="sIcon">👥</div><h2>Who's riding?</h2><p>Your settings, rides and PRs are loaded for you.</p>
+      <div class="riders">${users.map(u => { const s = (() => { try { return JSON.parse(localStorage.getItem('ascent.u.' + u.id + '.settings')) || {}; } catch (e) { return {}; } })(); return `<button class="rider ${u.id === Users.current()?.id ? 'cur' : ''}" data-u="${u.id}"><i style="background:${u.color}">${esc(u.name.slice(0, 1).toUpperCase())}</i><b>${esc(u.name)}</b><small>${s.ftp ? s.ftp + ' W FTP' : ''}${s.weight ? ' · ' + s.weight + ' kg' : ''}</small></button>`; }).join('')}
+        <button class="rider add" id="rAdd"><i>+</i><b>Add rider</b><small>New profile</small></button></div>`;
+    $$('[data-u]', b).forEach(el => el.onclick = () => { Users.use(el.dataset.u); App.onUserChange(); this.go(BLE.bike?.server?.connected ? (BLE.hr.some(h => h.bpm) ? 2 : 1) : 0); });
+    $('#rAdd').onclick = () => { this.adding = true; this.render(); };
   },
   hrList() { return BLE.hr.map(h => `<div class="hrRow ${h.bpm ? 'ok' : ''}"><span>${esc(h.name)}</span><b>${h.bpm || '…'}</b><small>${h.bpm ? 'bpm' : 'waiting for signal'}</small></div>`).join('') || '<p class="note">No heart-rate device connected yet.</p>'; },
   live() {
