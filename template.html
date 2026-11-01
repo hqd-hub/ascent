@@ -142,6 +142,30 @@ h4{font-family:var(--fc);letter-spacing:.12em;text-transform:uppercase;font-size
 .stages button{width:100%;display:flex;align-items:center;gap:10px;padding:7px 10px;border-radius:9px;background:#0c121c;font-weight:600;font-size:14px;text-align:left}
 .stages em{font-style:normal;font-family:var(--fc);color:var(--mut);width:16px}.stages span{margin-left:auto;font-family:var(--fc);color:var(--mut)}
 .stages li.ok button{opacity:.6}.stages li.ok span{color:var(--ok)}.stages li.next button{background:#2a1408;box-shadow:inset 3px 0 var(--acc)}.stages li.next span{color:var(--acc2)}
+#setup{position:fixed;inset:0;z-index:70;background:radial-gradient(120% 90% at 50% 0%,#2a1408 0%,#0a0e15 60%);overflow:auto;display:flex;justify-content:center;padding:max(20px,env(safe-area-inset-top)) 16px 30px}
+.setupIn{width:min(620px,100%)}.setupIn .logo{justify-content:center;margin:6px 0 18px}
+#setupSteps{list-style:none;display:flex;justify-content:space-between;gap:6px;margin-bottom:22px}
+#setupSteps li{flex:1;display:flex;flex-direction:column;align-items:center;gap:6px;font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--mut)}
+#setupSteps i{font-style:normal;width:32px;height:32px;border-radius:50%;display:grid;place-items:center;background:#1e2838;border:1px solid var(--line);font-family:var(--fc);font-size:16px;color:var(--fg)}
+#setupSteps li.on{color:var(--fg)}#setupSteps li.on i{background:var(--acc);border-color:var(--acc)}#setupSteps li.done i{background:#14532d;border-color:#1f7a44}
+#setupBody{background:var(--bg2);border:1px solid var(--line);border-radius:20px;padding:24px;text-align:center}
+#setupBody h2{font-family:var(--fc);font-size:36px;font-weight:800;margin:6px 0 8px}#setupBody>p{color:#c0cad8;line-height:1.5}
+.sIcon{font-size:44px}.go.off{opacity:.35}.lnk{display:block;margin:14px auto 0;color:var(--mut);font-size:14px;text-decoration:underline}
+.hrHelp{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:14px 0;text-align:left}.hrHelp div{background:#0c121c;border:1px solid var(--line);border-radius:12px;padding:12px;font-size:13px;line-height:1.45;color:#c0cad8}.hrHelp b{display:block;color:var(--fg);font-size:15px;margin-bottom:4px}
+.hrList{display:flex;flex-direction:column;gap:6px;margin-top:6px}.hrRow{display:flex;align-items:center;gap:10px;padding:10px 14px;border-radius:12px;background:#0c121c;border:1px solid var(--line);text-align:left}.hrRow span{flex:1;font-weight:600}.hrRow b{font-family:var(--fc);font-size:26px;color:#ff9b9b}.hrRow small{color:var(--mut);width:110px}.hrRow.ok{border-color:#1f5c38}
+.tLive{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:16px 0}.tLive div{background:#0c121c;border:1px solid var(--line);border-radius:12px;padding:10px}.tLive b{display:block;font-family:var(--fc);font-size:34px}.tLive small{color:var(--mut);font-size:11px;letter-spacing:.12em}
+.tBar{height:8px;border-radius:5px;background:#1e2838;overflow:hidden}.tBar i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--acc),var(--acc2));transition:width .25s}.tMsg{margin-top:12px;font-weight:600;min-height:1.4em}
+.choose{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:16px}.choose button{text-align:left;padding:16px;border-radius:16px;background:var(--card);border:1px solid var(--line);display:flex;flex-direction:column;gap:4px;transition:border-color .15s,transform .15s}.choose button:hover{border-color:var(--acc);transform:translateY(-2px)}
+.choose span{font-size:26px}.choose b{font-family:var(--fc);font-size:24px}.choose small{color:var(--mut);line-height:1.4;font-size:13px}
+@media (max-width:560px){.choose,.hrHelp{grid-template-columns:1fr}}
+body.insetup{overflow:hidden}
+body.focus #rideView{background:radial-gradient(100% 80% at 50% 30%,#1a2233 0%,#07090e 70%)}body.focus #world,body.focus #riders,body.focus #prof,body.focus #gradeBox,body.focus #btnView,body.focus #btnLane{display:none!important}
+body.focus .hBot{justify-content:flex-end}body.focus #wkBar{bottom:auto;top:52%;transform:translate(-50%,-50%);width:min(900px,calc(100% - 24px));padding:14px}body.focus #wkCanvas{height:min(30vh,240px)}
+body.focus #tgtBox{top:auto;bottom:calc(52% + min(15vh,120px) + 30px);transform:translateX(-50%) scale(1.25);transform-origin:bottom center}
+body.free .gearbox{display:none}
+#freeBox{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:22px;pointer-events:auto;font-family:var(--fc)}
+#freeBox button{width:96px;height:96px;border-radius:50%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);font-size:52px;font-weight:700}#freeBox button:active{background:var(--acc)}
+#freeBox div{text-align:center;min-width:170px}#freeBox b{display:block;font-size:120px;font-weight:800;line-height:1}#freeBox small{font-size:14px;letter-spacing:.18em;color:#a9b4c4}
 #pausedOv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);font-family:var(--fc);font-size:64px;font-weight:800;letter-spacing:.2em;pointer-events:none}
 @media (max-width:760px){#riders{display:none}.pow b{font-size:44px}.blk{min-width:62px;padding:6px 8px}.blk b{font-size:26px}.hTop{left:12px;transform:none}#gradeBox b{font-size:32px}#tgtBox{top:96px}.hide-s{display:none}}
 </style>
@@ -150,7 +174,7 @@ h4{font-family:var(--fc);letter-spacing:.12em;text-transform:uppercase;font-size
 <div id="home">
   <header class="top">
     <div class="logo"><svg viewBox="0 0 32 32"><path d="M2 27 L12 11 L17 18 L22 9 L30 27 Z" fill="#ff5a1f"/><path d="M19.5 13.5 L22 9 L24.6 14.2 L22 13 Z" fill="#fff"/></svg>ASCENT</div>
-    <div class="devs"><button class="chip" id="devBike"><i class="dot"></i><span>Connect bike</span></button><span id="devHr" class="devs" style="margin:0"></span></div>
+    <div class="devs"><button class="chip" id="devSetup">⚙ Start-up check</button><button class="chip" id="devBike"><i class="dot"></i><span>Connect bike</span></button><span id="devHr" class="devs" style="margin:0"></span></div>
   </header>
   <div class="warn" id="bleWarn" hidden>This browser has no Web Bluetooth, so it can't talk to the bike or your HR straps. Use <b>Chrome or Edge</b> on Mac / Windows / Android, or the free <b>Bluefy</b> browser on iPad / iPhone. Demo mode works everywhere.</div>
   <nav class="tabs"><button class="tab" data-tab="routes">Routes</button><button class="tab" data-tab="workouts">Workouts</button><button class="tab" data-tab="video">Video rides</button><button class="tab" data-tab="activity">Activity</button><button class="tab" data-tab="settings">Settings</button></nav>
@@ -178,6 +202,7 @@ h4{font-family:var(--fc);letter-spacing:.12em;text-transform:uppercase;font-size
     <div id="tgtBox" class="glass" hidden><div><small id="tLbl">TARGET</small><b><span id="tW">0</span> W</b></div><div><small>LEFT</small><b id="tRem">0:00</b></div><div><small>CADENCE</small><b id="tCad" style="font-size:24px"></b></div></div>
     <div id="wkBar" class="glass" hidden><canvas id="wkCanvas"></canvas></div>
     <div id="demoBox" class="glass" hidden>DEMO · power <b id="demoV">150 W</b><input type="range" id="demoP" min="0" max="600" step="5" value="150"><div style="color:#a9b4c4;margin-top:4px">↑ ↓ keys · + − gears · C camera · L lane</div></div>
+    <div id="freeBox" hidden><button id="freeDn">−</button><div><b id="freeLvl">6</b><small>RESISTANCE LEVEL</small></div><button id="freeUp">+</button></div>
     <div id="toasts"></div>
     <div id="syncBox" class="glass" hidden></div>
     <div class="hBot">
@@ -191,6 +216,7 @@ h4{font-family:var(--fc);letter-spacing:.12em;text-transform:uppercase;font-size
   </div>
 </div>
 
+<div id="setup" hidden><div class="setupIn"><div class="logo"><svg viewBox="0 0 32 32"><path d="M2 27 L12 11 L17 18 L22 9 L30 27 Z" fill="#ff5a1f"/><path d="M19.5 13.5 L22 9 L24.6 14.2 L22 13 Z" fill="#fff"/></svg>ASCENT</div><ol id="setupSteps"></ol><div id="setupBody"></div></div></div>
 <div id="sheet" hidden><div id="sheetIn"><button id="sheetClose" aria-label="Close">×</button><div id="sheetBody"></div></div></div>
 
 <script>/*THREE*/</script>

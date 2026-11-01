@@ -33,10 +33,11 @@ class Ride {
     // Bots
     const mass = S.weight;
     this.bots = [];
-    const pacer = PACERS.find(p => p.name === opts.pacer);
+    const pacer = opts.focus ? null : PACERS.find(p => p.name === opts.pacer);
+    this.freeLevel = Settings.get().flatLevel;
     if (pacer) this.bots.push({ name: pacer.name + ' · ' + pacer.wkg.toFixed(1) + ' W/kg', wkg: pacer.wkg, mass: 72, s: 6, v: 6, lateral: -1.3, color: pacer.color, pacer: true });
     const rnd = mulberry(Date.now() & 0xffff);
-    const nb = opts.mode === 'video' ? 0 : (Settings.get().quality === 'low' ? 5 : 9);
+    const nb = (opts.mode === 'video' || opts.focus) ? 0 : (Settings.get().quality === 'low' ? 5 : 9);
     for (let i = 0; i < nb; i++) this.bots.push({ name: BOT_NAMES[i % BOT_NAMES.length], wkg: 1.8 + rnd() * 2.4, mass: 62 + rnd() * 25, s: rnd() * 600 - 100, v: 7, lateral: -2.6 + rnd() * 4.8, color: new THREE.Color().setHSL(rnd(), 0.65, 0.5).getHex(), var: rnd() * 6 });
     this.bots.forEach(b => { if (b.s < 0) b.s = 0; b.p = b.wkg * b.mass; });
     // Ghost (personal best on this route)
@@ -61,6 +62,7 @@ class Ride {
 
   targetLevel(grade) {
     const S = Settings.get();
+    if (this.mode === 'free') return this.freeLevel;
     if (this.manualLevel != null) return this.manualLevel;
     const gearOff = (this.gear - 6) * 1.2;
     if (this.workout && this.erg) return this.ergLevel + gearOff * 0;
@@ -145,8 +147,8 @@ class Ride {
     }
     // Recording (1 Hz)
     this.recT += dt; if (this.recT >= 1) { this.recT -= 1; this.rec.push({ t: Math.round(this.t), s: +this.s.toFixed(1), p: Math.round(this.power), c: Math.round(this.cadence), hr: this.hr || 0, v: +this.v.toFixed(2), y: +y.toFixed(1), l: this.level }); }
-    if (!this.workout && this.s >= route.length - 1) this.finish('Summit!');
-    if (this.workout && this.s >= route.length - 5) { this.s = 0; this.nextKm = 1000; this.nextTurn = 0; this.bots.forEach(b => b.s = Math.random() * 300); } // loop scenery
+    if (!this.workout && this.mode !== 'free' && this.s >= route.length - 1) this.finish('Summit!');
+    if ((this.workout || this.mode === 'free') && this.s >= route.length - 5) { this.s = 0; this.nextKm = 1000; this.nextTurn = 0; this.bots.forEach(b => b.s = Math.random() * 300); } // loop scenery
   }
 
   cues(tg) {
@@ -168,7 +170,7 @@ class Ride {
     const IF = np / S.ftp, tss = (this.t * np * IF) / (S.ftp * 3600) * 100;
     let best60 = 0; for (let i = 60; i <= r.length; i++) { let s = 0; for (let k = i - 60; k < i; k++) s += r[k].p; best60 = Math.max(best60, s / 60); }
     let best5 = 0; for (let i = 5; i <= r.length; i++) { let s = 0; for (let k = i - 5; k < i; k++) s += r[k].p; best5 = Math.max(best5, s / 5); }
-    return { id: Date.now(), date: this.startedAt.toISOString(), route: this.route.def.name, routeId: this.route.def.id, workout: this.o.workout?.name || null, mode: this.mode,
+    return { id: Date.now(), date: this.startedAt.toISOString(), route: this.mode === 'free' ? 'Free ride' : this.route.def.name, routeId: this.mode === 'free' ? 'free' : this.route.def.id, workout: this.o.workout?.name || null, mode: this.mode,
       time: Math.round(this.t), dist: Math.round(this.s), gain: Math.round(this.gain), avgP: Math.round(avgP), np: Math.round(np), maxP: Math.max(0, ...r.map(x => x.p)), avgHr: Math.round(avgHr), maxHr: Math.max(0, ...r.map(x => x.hr)),
       kcal: Math.round(this.kj / 0.24 / 4.184), tss: Math.round(tss), IF: +IF.toFixed(2), best60: Math.round(best60), best5: Math.round(best5), segs: this.segResults, finished: this.s >= this.route.length - 2, demo: this.demo };
   }

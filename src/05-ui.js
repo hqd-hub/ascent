@@ -62,6 +62,8 @@ const App = {
     this.renderDevices();
     document.addEventListener('keydown', e => this.key(e));
     if (!BLE.supported) $('#bleWarn').hidden = false;
+    $('#devSetup').onclick = () => Setup.open();
+    Setup.open();
   },
   route(id) { if (!this.routeCache[id]) this.routeCache[id] = buildRoute(ROUTES.find(r => r.id === id)); return this.routeCache[id]; },
 
@@ -149,12 +151,12 @@ const App = {
     const S = Settings.get(), tl = workoutTimeline(w, S.ftp);
     sheet(`<div class="sheethead"><span class="badge">${w.tag}</span><h2>${esc(w.name)}</h2><p>${esc(w.desc)}</p></div><canvas class="bigprof"></canvas>
       <div class="kv"><div><b>${fmtTime(tl.total)}</b> duration</div><div><b>${Math.round(Math.max(...w.blocks.flatMap(b => [].concat(b.p))) * S.ftp)}</b> W peak</div><div><b>${S.ftp}</b> W FTP</div></div>
-      <div class="form"><label>Scenery<select id="oRoute">${ROUTES.map(r => `<option value="${r.id}" ${r.id === (w.ramp ? 'lake' : 'fjord') ? 'selected' : ''}>${esc(r.name)}</option>`).join('')}</select></label>
+      <div class="form"><label>Screen<select id="oRoute"><option value="">Focus screen: just the numbers and intervals, no video or 3D</option>${ROUTES.map(r => `<option value="${r.id}">3D scenery: ${esc(r.name)}</option>`).join('')}</select><small>The focus screen saves battery and works on any iPad.</small></label>
       <label class="chk"><input type="checkbox" id="oErg" ${store.get('erg', true) ? 'checked' : ''}> Auto-resistance (pseudo-ERG): bike levels follow the power target</label>
       <label>Pace partner<select id="oPacer"><option value="">None</option>${PACERS.map(p => `<option>${p.name}</option>`).join('')}</select></label></div>
       <button class="go" id="goW">Start workout</button>`, (root) => {
       requestAnimationFrame(() => drawWorkout($('.bigprof', root), w));
-      $('#goW', root).onclick = () => { store.set('erg', $('#oErg', root).checked); const r = this.route($('#oRoute', root).value); closeSheet(); this.start({ route: r, mode: 'workout', workout: w, pacer: $('#oPacer', root).value, erg: $('#oErg', root).checked }); };
+      $('#goW', root).onclick = () => { store.set('erg', $('#oErg', root).checked); const rid = $('#oRoute', root).value, r = this.route(rid || 'lake'); closeSheet(); this.start({ route: r, mode: 'workout', workout: w, pacer: $('#oPacer', root).value, erg: $('#oErg', root).checked, focus: !rid }); };
     });
   },
 
@@ -271,36 +273,44 @@ const App = {
     $('#resetAll').onclick = () => { if (confirmLite('Delete all rides, PRs and settings?')) { try { Object.keys(localStorage).filter(k => k.startsWith('ascent.')).forEach(k => localStorage.removeItem(k)); } catch (e) {} location.reload(); } };
   },
 
+  freeRide() { this.start({ route: this.route('lake'), mode: 'free', focus: true }); },
+
   // ── Ride
   start(opts) {
     $('#home').hidden = true; $('#rideView').hidden = false; document.body.classList.add('riding');
+    const focus = !!opts.focus; document.body.classList.toggle('focus', focus); document.body.classList.toggle('free', opts.mode === 'free');
     this.world.view = store.get('view', 'first');
-    this.world.load(opts.route);
+    if (!focus) this.world.load(opts.route);
     this.ride = new Ride(opts); const R = this.ride;
-    R.bots.forEach(b => { b.obj = this.world.makeRider(b.color); b.obj.add(this.world.makeLabel(b.name.split(' · ')[0], b.pacer ? '#ffd166' : '#fff')); });
-    if (R.ghost) { R.ghostObj = this.world.makeRider(0x9ad1ff, true); R.ghostObj.add(this.world.makeLabel('PR ghost', '#9ad1ff')); }
-    R.me = this.world.makeRider(0xff5a1f);
+    if (!focus) {
+      R.bots.forEach(b => { b.obj = this.world.makeRider(b.color); b.obj.add(this.world.makeLabel(b.name.split(' · ')[0], b.pacer ? '#ffd166' : '#fff')); });
+      if (R.ghost) { R.ghostObj = this.world.makeRider(0x9ad1ff, true); R.ghostObj.add(this.world.makeLabel('PR ghost', '#9ad1ff')); }
+      R.me = this.world.makeRider(0xff5a1f);
+    } else R.ghost = null;
     if (opts.mode === 'video') {
       R.video = new VideoSync({ ...opts.video, el: $('#video'), ytHost: $('#ytHost'), routeLength: opts.route.length });
       $('#btnSync').hidden = false; if (!(opts.video.anchors || []).length) setTimeout(() => toast('Tap SYNC when you see the climb start or a km sign'), 4000);
       $('#world').style.opacity = 0; R.gpx = opts.gpx;
     } else { $('#world').style.opacity = 1; $('#btnSync').hidden = true; }
     $('#wkBar').hidden = !R.workout; $('#demoBox').hidden = !R.demo; $('#tgtBox').hidden = !R.workout;
-    if (R.workout) drawWorkout($('#wkCanvas'), opts.workout, { now: 0 });
-    this.profileMap = null; setTimeout(() => { this.profileMap = drawProfile($('#profCanvas'), R.route, { segs: true, alpha: 0.75, top: 10 }); }, 30);
+    if (R.workout) setTimeout(() => drawWorkout($('#wkCanvas'), opts.workout, { now: 0 }), 30);
+    this.profileMap = null; if (!focus) setTimeout(() => { this.profileMap = drawProfile($('#profCanvas'), R.route, { segs: true, alpha: 0.75, top: 10 }); }, 30);
+    $('#freeBox').hidden = opts.mode !== 'free';
     Sound.start(); try { navigator.wakeLock?.request('screen').then(l => this.wake = l).catch(() => {}); } catch (e) {}
     if (R.demo) toast('Demo mode — no bike connected. Use ↑ ↓ or the slider to set watts.');
-    say(opts.mode === 'workout' ? `${opts.workout.name}. Let's go.` : `${opts.route.def.name}. Good luck.`);
+    say(opts.mode === 'workout' ? `${opts.workout.name}. Let's go.` : opts.mode === 'free' ? 'Free ride. Use plus and minus to change resistance.' : `${opts.route.def.name}. Good luck.`);
     this.hudDevices(); this.bindHud();
     let last = performance.now(), acc = 0;
     const loop = (now) => {
       const dt = Math.min(0.1, (now - last) / 1000); last = now;
       R.tick(dt, this.world);
       const W = this.world;
-      W.setRider(R.me, R.s, R.lateral, R.cadence, R.v, dt); R.me.visible = W.view !== 'first';
-      R.bots.forEach(b => W.setRider(b.obj, b.s, b.lateral, 85, b.v, dt));
-      if (R.ghostObj) { if (R.ghostS != null) { R.ghostObj.visible = true; W.setRider(R.ghostObj, R.ghostS, R.lateral + 1.1, 85, 7, dt); } else R.ghostObj.visible = false; }
-      if (opts.mode !== 'video') { W.updateCamera(R.s, R.lateral, R.cadence, dt, R.t); W.render(); }
+      if (!focus) {
+        W.setRider(R.me, R.s, R.lateral, R.cadence, R.v, dt); R.me.visible = W.view !== 'first';
+        R.bots.forEach(b => W.setRider(b.obj, b.s, b.lateral, 85, b.v, dt));
+        if (R.ghostObj) { if (R.ghostS != null) { R.ghostObj.visible = true; W.setRider(R.ghostObj, R.ghostS, R.lateral + 1.1, 85, 7, dt); } else R.ghostObj.visible = false; }
+        if (opts.mode !== 'video') { W.updateCamera(R.s, R.lateral, R.cadence, dt, R.t); W.render(); }
+      }
       Sound.update(R.v);
       acc += dt; if (acc > 0.2) { acc = 0; this.hud(); }
       if (R.finished) return this.end();
@@ -310,8 +320,9 @@ const App = {
   },
   bindHud() {
     const R = this.ride;
-    $('#gearUp').onclick = () => { R.gear = Math.min(11, R.gear + 1); this.hud(); };
-    $('#gearDn').onclick = () => { R.gear = Math.max(1, R.gear - 1); this.hud(); };
+    const S0 = Settings.get();
+    $('#gearUp').onclick = $('#freeUp').onclick = () => { if (R.mode === 'free') R.freeLevel = Math.min(S0.maxLevel, R.freeLevel + 1); else R.gear = Math.min(11, R.gear + 1); this.hud(); };
+    $('#gearDn').onclick = $('#freeDn').onclick = () => { if (R.mode === 'free') R.freeLevel = Math.max(1, R.freeLevel - 1); else R.gear = Math.max(1, R.gear - 1); this.hud(); };
     $('#btnView').onclick = () => { this.world.view = this.world.view === 'first' ? 'third' : 'first'; store.set('view', this.world.view); };
     $('#btnPause').onclick = () => { R.paused = !R.paused; $('#btnPause').textContent = R.paused ? '▶' : '❚❚'; $('#pausedOv').hidden = !R.paused; };
     $('#btnEnd').onclick = () => { if (confirmLite('End ride and save?')) R.finish('Ride ended'); };
@@ -340,17 +351,17 @@ const App = {
     const hr = R.hr; $('#hHrV').textContent = hr || '–'; $('#hHrZ').textContent = hr ? 'Z' + hrZone(hr, S.maxHr) : ''; $('#hrBlock').style.setProperty('--z', hr ? ZONE_COL[hrZone(hr, S.maxHr) + 1] : '#444');
     $('#hSpd').textContent = (R.v * 3.6).toFixed(1); $('#hDist').textContent = (R.s / 1000).toFixed(2); $('#hElev').textContent = Math.round(R.gain); $('#hTime').textContent = fmtTime(R.t);
     $('#hGrade').textContent = (g >= 0 ? '' : '−') + Math.abs(g).toFixed(1); $('#gradeBox').style.background = g > 9 ? '#b91c1c' : g > 6 ? '#ea580c' : g > 3 ? '#ca8a04' : g > -2 ? '#1f2937' : '#1d4ed8';
-    $('#hLvl').textContent = R.level; $('#hGear').textContent = R.gear; $('#btnLvl').classList.toggle('manual', R.manualLevel != null);
+    $('#hLvl').textContent = R.level; $('#hGear').textContent = R.mode === 'free' ? R.level : R.gear; $('#freeLvl').textContent = R.level; $('#btnLvl').classList.toggle('manual', R.manualLevel != null);
     $('#hDraft').hidden = R.draft < 0.08;
-    $('#hRemain').textContent = R.route.def.real && !R.workout ? `${((R.route.length - R.s) / 1000).toFixed(1)} km to summit` : `${(R.route.length / 1000 - R.s / 1000).toFixed(1)} km left`;
+    if (R.mode === 'free' || R.o.focus) $('#hRemain').textContent = R.mode === 'free' ? 'Free ride' : (R.o.workout?.name || ''); else $('#hRemain').textContent = R.route.def.real && !R.workout ? `${((R.route.length - R.s) / 1000).toFixed(1)} km to summit` : `${(R.route.length / 1000 - R.s / 1000).toFixed(1)} km left`;
     $('#demoV').textContent = R.demoPower + ' W';
     if (R.workout && R.target) {
       const tg = R.target; $('#tW').textContent = tg.watts; $('#tLbl').textContent = tg.seg.b.label; $('#tRem').textContent = fmtTime(tg.remain);
       $('#tCad').textContent = tg.seg.b.c ? tg.seg.b.c + ' rpm' : ''; const diff = p - tg.watts; $('#tgtBox').dataset.state = Math.abs(diff) < tg.watts * 0.06 ? 'on' : diff < 0 ? 'low' : 'high';
-      drawWorkout($('#wkCanvas'), this.ride.o.workout, { now: R.t });
+      if (!this._wkT || R.t - this._wkT > 1) { this._wkT = R.t; drawWorkout($('#wkCanvas'), this.ride.o.workout, { now: R.t }); }
     }
     // Profile marker + riders
-    if (this.profileMap) {
+    if (this.profileMap && !R.o.focus) {
       const mk = $('#profMe'), x = this.profileMap.X(R.s); mk.style.left = x + 'px';
       $('#profGhost').hidden = R.ghostS == null; if (R.ghostS != null) $('#profGhost').style.left = this.profileMap.X(R.ghostS) + 'px';
     }
@@ -362,14 +373,14 @@ const App = {
   },
   end() {
     cancelAnimationFrame(this.raf); const R = this.ride; this.ride = null; Sound.stop(); try { this.wake?.release(); } catch (e) {}
-    R.video?.stop(); $('#syncBox').hidden = true; document.body.classList.remove('riding');
+    R.video?.stop(); $('#syncBox').hidden = true; document.body.classList.remove('riding', 'focus', 'free');
     const sum = R.summary();
     if (R.rec.length < 20) { $('#rideView').hidden = true; $('#home').hidden = false; toast('Ride too short to save'); this.show(this.tab); return; }
     // Persist
     const rides = store.get('rides', []); rides.push(sum); store.set('rides', rides.slice(-200));
     store.set('rec.' + sum.id, R.rec); const keep = rides.slice(-15).map(r => 'rec.' + r.id); try { Object.keys(localStorage).filter(k => k.startsWith('ascent.rec.') && !keep.includes(k.slice(7))).forEach(k => localStorage.removeItem(k)); } catch (e) {}
     let newPb = false;
-    if (sum.finished && !R.workout && R.mode !== 'video') { const pb = store.get('ghost.' + sum.routeId, null); if (!pb || R.t < pb.time) { newPb = !!pb || true; const s = []; for (let i = 0; i < R.rec.length; i += 2) s.push(R.rec[i].s); store.set('ghost.' + sum.routeId, { time: R.t, s, date: Date.now() }); } }
+    if (sum.finished && !R.workout && R.mode !== 'video' && R.mode !== 'free') { const pb = store.get('ghost.' + sum.routeId, null); if (!pb || R.t < pb.time) { newPb = !!pb || true; const s = []; for (let i = 0; i < R.rec.length; i += 2) s.push(R.rec[i].s); store.set('ghost.' + sum.routeId, { time: R.t, s, date: Date.now() }); } }
     const xpGain = sum.dist / 1000 * 20 + sum.gain * 0.6 + sum.time / 60 * 2 + (sum.finished ? 100 : 0); const xp0 = store.get('xp', 0), l0 = levelFor(xp0).n; store.set('xp', xp0 + xpGain); const l1 = levelFor(xp0 + xpGain).n;
     const earned = awardBadges(sum, rides);
     const ftpNew = R.o.workout?.ramp && sum.best60 ? Math.round(sum.best60 * 0.75) : null;
