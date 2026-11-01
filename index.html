@@ -354,7 +354,7 @@ const BLE = {
       try {
         L.ftmsCp = await svc.getCharacteristic(FTMS_CP);
         L.ftmsCp.addEventListener('characteristicvaluechanged', e => this.onCp(new Uint8Array(e.target.value.buffer), L));
-        await L.ftmsCp.startNotifications();
+        await L.ftmsCp.startNotifications(); await wait(400);
       } catch (e) { L.ftmsCp = null; this.addLog('··', L.name + ': FTMS control point unavailable (' + errText(e) + ')'); }
       this.addLog('··', L.name + ': FTMS 1826 found');
     } catch (e) { this.addLog('··', L.name + ': no FTMS service'); }
@@ -412,8 +412,11 @@ const BLE = {
       const r = await this.gatt(async () => {
         if (!quiet) this.addLog('>>', L.name + ' CP ' + hex(u8));
         const reply = new Promise(res => { L.cpWait = res; setTimeout(() => { if (L.cpWait === res) { L.cpWait = null; res(0); } }, 2500); });
-        const c = L.ftmsCp; let sent = false;
-        for (const fn of [c.writeValueWithResponse, c.writeValue].filter(f => typeof f === 'function')) { try { await fn.call(c, u8); sent = true; break; } catch (e) { this.addLog('!!', L.name + ' CP write failed: ' + errText(e)); } }
+        let sent = await this.cpSend(L, u8);
+        if (!sent) { // re-acquire the characteristic once and retry (some iOS bridges lose the handle)
+          try { const svc = await L.server.getPrimaryService(FTMS_SVC); L.ftmsCp = await svc.getCharacteristic(FTMS_CP); L.ftmsCp.addEventListener('characteristicvaluechanged', e => this.onCp(new Uint8Array(e.target.value.buffer), L)); await L.ftmsCp.startNotifications(); await wait(300); this.addLog('··', L.name + ': control point re-acquired'); } catch (e) { this.addLog('!!', 're-acquire failed: ' + errText(e)); }
+          sent = await this.cpSend(L, u8);
+        }
         if (!sent) { L.cpWait = null; return -1; }
         const code = await reply; if (!code && !quiet) this.addLog('!!', L.name + ' CP: no reply from bike');
         return code;
@@ -423,6 +426,22 @@ const BLE = {
     return best;
   },
   ftmsWrite(arr) { return this.ftmsCmd(arr); },
+  // Try every way Web Bluetooth implementations accept a write; remember the first that works.
+  async cpSend(L, u8) {
+    const c = L.ftmsCp; if (!c) return false;
+    const ab = u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength), dv = new DataView(ab);
+    const ways = [
+      ['withResponse(Uint8Array)', () => c.writeValueWithResponse(u8)], ['withResponse(ArrayBuffer)', () => c.writeValueWithResponse(ab)],
+      ['writeValue(Uint8Array)', () => c.writeValue(u8)], ['writeValue(ArrayBuffer)', () => c.writeValue(ab)], ['writeValue(DataView)', () => c.writeValue(dv)],
+      ['withoutResponse(Uint8Array)', () => c.writeValueWithoutResponse(u8)]
+    ].filter(([n]) => typeof c[n.split('(')[0] === 'withResponse' ? 'writeValueWithResponse' : n.split('(')[0] === 'withoutResponse' ? 'writeValueWithoutResponse' : 'writeValue'] === 'function');
+    const order = L.cpWay ? [ways.find(w => w[0] === L.cpWay), ...ways.filter(w => w[0] !== L.cpWay)].filter(Boolean) : ways;
+    for (const [nm, fn] of order) {
+      try { await fn(); if (L.cpWay !== nm) this.addLog('··', L.name + ' CP write accepted via ' + nm); L.cpWay = nm; return true; }
+      catch (e) { this.addLog('!!', L.name + ' CP ' + nm + ' failed: ' + errText(e)); }
+    }
+    return false;
+  },
 
   async fitshowInit(L) {
     const seq = [[0x02,0x42,0x42,0x03],[0x02,0x42,0x42,0x03],[0x02,0x41,0x02,0x43,0x03],[0x02,0x41,0x03,0x42,0x03],
