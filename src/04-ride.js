@@ -34,7 +34,7 @@ class Ride {
     const mass = S.weight;
     this.bots = [];
     const pacer = opts.focus ? null : PACERS.find(p => p.name === opts.pacer);
-    this.freeLevel = Settings.get().flatLevel;
+    this.freeLevel = Settings.get().flatLevel; this.dist = 0; this.zt = new Array(7).fill(0); this.hzt = new Array(6).fill(0);
     if (pacer) this.bots.push({ name: pacer.name + ' · ' + pacer.wkg.toFixed(1) + ' W/kg', wkg: pacer.wkg, mass: 72, s: 6, v: 6, lateral: -1.3, color: pacer.color, pacer: true });
     const rnd = mulberry(Date.now() & 0xffff);
     const nb = (opts.mode === 'video' || opts.focus) ? 0 : (Settings.get().quality === 'low' ? 5 : 9);
@@ -90,7 +90,8 @@ class Ride {
     this.v = physicsStep(this.v, this.power, grade, mass, S.cda, S.crr, this.draft, dt);
     if (!(this.video && this.video.synced)) this.s += this.v * dt;
     if (this.video) this.video.setSpeed(this.v);
-    this.kj += this.power * dt / 1000;
+    this.kj += this.power * dt / 1000; this.dist += this.v * dt;
+    if (this.power > 0) this.zt[pwrZone(this.power, S.ftp)] += dt; if (this.hr) this.hzt[hrZone(this.hr, S.maxHr)] += dt;
     const y = route.at(this.s).y; if (y > this.lastY) this.gain += y - this.lastY; this.lastY = y;
     this.p3.push([this.t, this.power]); while (this.p3.length && this.t - this.p3[0][0] > 3) this.p3.shift();
 
@@ -159,6 +160,7 @@ class Ride {
       toast(`Next: ${nb.label} · ${fmtTime(nb.d)} @ ${w} W`);
     }
   }
+  summaryLite() { const r = this.rec; if (r.length < 30) return { np: 0 }; let sum = 0, acc = 0, n = 0; for (let i = 0; i < r.length; i++) { sum += r[i].p; if (i >= 30) sum -= r[i - 30].p; if (i >= 29) { acc += Math.pow(sum / 30, 4); n++; } } return { np: Math.round(Math.pow(acc / n, 0.25)) }; }
   avg3() { return this.p3.length ? this.p3.reduce((a, b) => a + b[1], 0) / this.p3.length : 0; }
   finish(msg) { if (this.finished) return; this.finished = true; this.finishMsg = msg; }
 
@@ -171,7 +173,7 @@ class Ride {
     let best60 = 0; for (let i = 60; i <= r.length; i++) { let s = 0; for (let k = i - 60; k < i; k++) s += r[k].p; best60 = Math.max(best60, s / 60); }
     let best5 = 0; for (let i = 5; i <= r.length; i++) { let s = 0; for (let k = i - 5; k < i; k++) s += r[k].p; best5 = Math.max(best5, s / 5); }
     return { id: Date.now(), date: this.startedAt.toISOString(), route: this.mode === 'free' ? 'Free ride' : this.route.def.name, routeId: this.mode === 'free' ? 'free' : this.route.def.id, workout: this.o.workout?.name || null, mode: this.mode,
-      time: Math.round(this.t), dist: Math.round(this.s), gain: Math.round(this.gain), avgP: Math.round(avgP), np: Math.round(np), maxP: Math.max(0, ...r.map(x => x.p)), avgHr: Math.round(avgHr), maxHr: Math.max(0, ...r.map(x => x.hr)),
+      time: Math.round(this.t), dist: Math.round(this.mode === 'video' ? this.s : this.dist), gain: Math.round(this.gain), avgP: Math.round(avgP), np: Math.round(np), maxP: Math.max(0, ...r.map(x => x.p)), avgHr: Math.round(avgHr), maxHr: Math.max(0, ...r.map(x => x.hr)),
       kcal: Math.round(this.kj / 0.24 / 4.184), tss: Math.round(tss), IF: +IF.toFixed(2), best60: Math.round(best60), best5: Math.round(best5), segs: this.segResults, finished: this.s >= this.route.length - 2, demo: this.demo };
   }
 }

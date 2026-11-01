@@ -126,13 +126,14 @@ const App = {
       <div class="form">
         <label>Pace partner<select id="oPacer"><option value="">None</option>${PACERS.map(p => `<option ${store.get('pacer', '') === p.name ? 'selected' : ''}>${p.name}</option>`).join('')}</select><small>${PACERS.map(p => p.name + ' ' + p.wkg + ' W/kg').join(' · ')}</small></label>
         <label class="chk"><input type="checkbox" id="oGhost" ${pr ? 'checked' : 'disabled'}> Race my PR ghost ${pr ? '(' + fmtTime(pr.time) + ')' : '(after your first finish)'}</label>
+        <label>Screen<select id="oView"><option value="3d" ${store.get('screen', '3d') === '3d' ? 'selected' : ''}>3D world (first-person)</option><option value="data" ${store.get('screen', '3d') === 'data' ? 'selected' : ''}>Data screen: numbers, graphs and zone bars only</option></select><small>You can switch mid-ride with the DATA / 3D button.</small></label>
         <label>Trainer difficulty <output id="oDiffV">${S.difficulty} %</output><input type="range" id="oDiff" min="20" max="100" step="5" value="${S.difficulty}"><small>How much of the real gradient you feel. 100 % = brutal on a 32-level bike.</small></label>
       </div>
       ${def.real && def.video ? `<a class="link" target="_blank" rel="noopener" href="https://www.youtube.com/results?search_query=${encodeURIComponent(def.video)}">▶ Find first-person footage of this climb on YouTube (for Video rides)</a>` : ''}
       <button class="go" id="goRide">${workout ? 'Start workout' : 'Start ride'}</button>`, (root) => {
       requestAnimationFrame(() => drawProfile($('.bigprof', root), r, { segs: true, top: 8 }));
       $('#oDiff', root).oninput = (e) => { $('#oDiffV', root).textContent = e.target.value + ' %'; Settings.set({ difficulty: +e.target.value }); };
-      $('#goRide', root).onclick = () => { const pacer = $('#oPacer', root).value; store.set('pacer', pacer); closeSheet(); this.start({ route: r, mode: workout ? 'workout' : 'route', workout, pacer, ghost: $('#oGhost', root).checked, erg: workout ? store.get('erg', true) : false }); };
+      $('#goRide', root).onclick = () => { const pacer = $('#oPacer', root).value; store.set('pacer', pacer); const view = $('#oView', root).value; store.set('screen', view); closeSheet(); this.start({ route: r, mode: workout ? 'workout' : 'route', workout, pacer, ghost: $('#oGhost', root).checked, erg: workout ? store.get('erg', true) : false, focus: view === 'data' }); };
     });
   },
 
@@ -147,15 +148,26 @@ const App = {
       c.onclick = () => this.workoutSheet(w);
     }
   },
-  workoutSheet(w) {
-    const S = Settings.get(), tl = workoutTimeline(w, S.ftp);
-    sheet(`<div class="sheethead"><span class="badge">${w.tag}</span><h2>${esc(w.name)}</h2><p>${esc(w.desc)}</p></div><canvas class="bigprof"></canvas>
-      <div class="kv"><div><b>${fmtTime(tl.total)}</b> duration</div><div><b>${Math.round(Math.max(...w.blocks.flatMap(b => [].concat(b.p))) * S.ftp)}</b> W peak</div><div><b>${S.ftp}</b> W FTP</div></div>
-      <div class="form"><label>Screen<select id="oRoute"><option value="">Focus screen: just the numbers and intervals, no video or 3D</option>${ROUTES.map(r => `<option value="${r.id}">3D scenery: ${esc(r.name)}</option>`).join('')}</select><small>The focus screen saves battery and works on any iPad.</small></label>
+  workoutSheet(w0) {
+    const S = Settings.get(), orig = workoutTimeline(w0, S.ftp).total, om = Math.round(orig / 60);
+    const lens = [...new Set([15, 20, 30, 45, 60, 75, 90, 120, om])].sort((a, b) => a - b);
+    let w = w0;
+    sheet(`<div class="sheethead"><span class="badge">${w0.tag}</span><h2>${esc(w0.name)}</h2><p>${esc(w0.desc)}</p></div><canvas class="bigprof"></canvas>
+      <div class="kv"><div><b id="kvDur">${fmtTime(orig)}</b> duration</div><div><b id="kvSet">–</b> main set</div><div><b id="kvTss">–</b> TSS (est.)</div><div><b>${S.ftp}</b> W FTP</div></div>
+      <div class="form">${w0.ramp ? '<p class="note">The ramp test runs until you can’t hold the power, so its length isn’t set in advance.</p>' : `
+        <label>How long do you have? <output id="oLenV">${om} min</output><div class="lens">${lens.map(m => `<button class="sm ${m === om ? 'on' : ''}" data-len="${m}">${m}${m === om ? '*' : ''}</button>`).join('')}</div><small>* = original length. Intervals are added or removed to fit, and the warm-up and cool-down adapt. The intensities stay the same.</small></label>`}
+        <label>Screen<select id="oRoute"><option value="">Data screen: numbers, graphs, zone bars and intervals (no video or 3D)</option>${ROUTES.map(r => `<option value="${r.id}">3D scenery: ${esc(r.name)}</option>`).join('')}</select><small>The data screen saves battery and works on any iPad.</small></label>
       <label class="chk"><input type="checkbox" id="oErg" ${store.get('erg', true) ? 'checked' : ''}> Auto-resistance (pseudo-ERG): bike levels follow the power target</label>
-      <label>Pace partner<select id="oPacer"><option value="">None</option>${PACERS.map(p => `<option>${p.name}</option>`).join('')}</select></label></div>
+      <label>Pace partner<select id="oPacer"><option value="">None</option>${PACERS.map(p => `<option>${p.name}</option>`).join('')}</select><small>Only shown with 3D scenery.</small></label></div>
       <button class="go" id="goW">Start workout</button>`, (root) => {
-      requestAnimationFrame(() => drawWorkout($('.bigprof', root), w));
+      const refresh = () => {
+        const tl = workoutTimeline(w, S.ftp); $('#kvDur', root).textContent = fmtTime(tl.total); $('#kvTss', root).textContent = w0.ramp ? '–' : estTSS(w, S.ftp);
+        const mainBlk = w.blocks.filter(b => !/warm|cool/i.test(b.label)); const hard = mainBlk.filter(b => (Array.isArray(b.p) ? b.p[0] : b.p) >= 0.85);
+        $('#kvSet', root).textContent = w0.ramp ? '–' : (hard.length ? `${hard.length}× ${fmtTime(hard[0].d)}` : fmtTime(mainBlk.reduce((a, b) => a + b.d, 0)));
+        requestAnimationFrame(() => drawWorkout($('.bigprof', root), w));
+      };
+      $$('[data-len]', root).forEach(bt => bt.onclick = () => { $$('[data-len]', root).forEach(x => x.classList.toggle('on', x === bt)); const m = +bt.dataset.len; w = m === om ? w0 : adaptWorkout(w0, m * 60); $('#oLenV', root).textContent = Math.round(workoutTimeline(w, S.ftp).total / 60) + ' min'; refresh(); });
+      refresh();
       $('#goW', root).onclick = () => { store.set('erg', $('#oErg', root).checked); const rid = $('#oRoute', root).value, r = this.route(rid || 'lake'); closeSheet(); this.start({ route: r, mode: 'workout', workout: w, pacer: $('#oPacer', root).value, erg: $('#oErg', root).checked, focus: !rid }); };
     });
   },
@@ -273,6 +285,19 @@ const App = {
     $('#resetAll').onclick = () => { if (confirmLite('Delete all rides, PRs and settings?')) { try { Object.keys(localStorage).filter(k => k.startsWith('ascent.')).forEach(k => localStorage.removeItem(k)); } catch (e) {} location.reload(); } };
   },
 
+  ensureWorld(R) {
+    if (R.worldReady) return; this.world.load(R.route);
+    R.bots.forEach(b => { b.obj = this.world.makeRider(b.color); b.obj.add(this.world.makeLabel(b.name.split(' · ')[0], b.pacer ? '#ffd166' : '#fff')); });
+    if (R.ghost) { R.ghostObj = this.world.makeRider(0x9ad1ff, true); R.ghostObj.add(this.world.makeLabel('PR ghost', '#9ad1ff')); }
+    R.me = this.world.makeRider(0xff5a1f); R.worldReady = true;
+  },
+  toggleView() {
+    const R = this.ride; if (!R) return; R.view = R.view === '3d' ? 'data' : '3d'; const data = R.view === 'data';
+    if (!data) { this.ensureWorld(R); this.world.resize(); setTimeout(() => { this.profileMap = drawProfile($('#profCanvas'), R.route, { segs: true, alpha: 0.75, top: 10 }); if (R.workout) drawWorkout($('#wkCanvas'), R.o.workout, { now: R.t }); }, 30); }
+    else Dash.build(R);
+    document.body.classList.toggle('focus', data); $('#dash').hidden = !data; $('#btnData').textContent = data ? '3D' : 'DATA';
+    $('#freeBox').hidden = true; store.set('screen', R.view);
+  },
   freeRide() { this.start({ route: this.route('lake'), mode: 'free', focus: true }); },
 
   // ── Ride
@@ -280,13 +305,10 @@ const App = {
     $('#home').hidden = true; $('#rideView').hidden = false; document.body.classList.add('riding');
     const focus = !!opts.focus; document.body.classList.toggle('focus', focus); document.body.classList.toggle('free', opts.mode === 'free');
     this.world.view = store.get('view', 'first');
-    if (!focus) this.world.load(opts.route);
-    this.ride = new Ride(opts); const R = this.ride;
-    if (!focus) {
-      R.bots.forEach(b => { b.obj = this.world.makeRider(b.color); b.obj.add(this.world.makeLabel(b.name.split(' · ')[0], b.pacer ? '#ffd166' : '#fff')); });
-      if (R.ghost) { R.ghostObj = this.world.makeRider(0x9ad1ff, true); R.ghostObj.add(this.world.makeLabel('PR ghost', '#9ad1ff')); }
-      R.me = this.world.makeRider(0xff5a1f);
-    } else R.ghost = null;
+    this.ride = new Ride(opts); const R = this.ride; R.view = focus ? 'data' : '3d'; R.worldReady = false;
+    if (!focus) this.ensureWorld(R);
+    if (focus) Dash.build(R); $('#dash').hidden = !focus;
+    const canToggle = opts.mode === 'route' || opts.mode === 'workout'; $('#btnData').hidden = !canToggle; $('#btnData').textContent = focus ? '3D' : 'DATA';
     if (opts.mode === 'video') {
       R.video = new VideoSync({ ...opts.video, el: $('#video'), ytHost: $('#ytHost'), routeLength: opts.route.length });
       $('#btnSync').hidden = false; if (!(opts.video.anchors || []).length) setTimeout(() => toast('Tap SYNC when you see the climb start or a km sign'), 4000);
@@ -295,7 +317,7 @@ const App = {
     $('#wkBar').hidden = !R.workout; $('#demoBox').hidden = !R.demo; $('#tgtBox').hidden = !R.workout;
     if (R.workout) setTimeout(() => drawWorkout($('#wkCanvas'), opts.workout, { now: 0 }), 30);
     this.profileMap = null; if (!focus) setTimeout(() => { this.profileMap = drawProfile($('#profCanvas'), R.route, { segs: true, alpha: 0.75, top: 10 }); }, 30);
-    $('#freeBox').hidden = opts.mode !== 'free';
+    $('#freeBox').hidden = true;
     Sound.start(); try { navigator.wakeLock?.request('screen').then(l => this.wake = l).catch(() => {}); } catch (e) {}
     if (R.demo) toast('Demo mode — no bike connected. Use ↑ ↓ or the slider to set watts.');
     say(opts.mode === 'workout' ? `${opts.workout.name}. Let's go.` : opts.mode === 'free' ? 'Free ride. Use plus and minus to change resistance.' : `${opts.route.def.name}. Good luck.`);
@@ -305,7 +327,7 @@ const App = {
       const dt = Math.min(0.1, (now - last) / 1000); last = now;
       R.tick(dt, this.world);
       const W = this.world;
-      if (!focus) {
+      if (R.view === '3d' && R.worldReady) {
         W.setRider(R.me, R.s, R.lateral, R.cadence, R.v, dt); R.me.visible = W.view !== 'first';
         R.bots.forEach(b => W.setRider(b.obj, b.s, b.lateral, 85, b.v, dt));
         if (R.ghostObj) { if (R.ghostS != null) { R.ghostObj.visible = true; W.setRider(R.ghostObj, R.ghostS, R.lateral + 1.1, 85, 7, dt); } else R.ghostObj.visible = false; }
@@ -330,6 +352,7 @@ const App = {
     $('#demoP').oninput = (e) => { R.demoPower = +e.target.value; };
     $('#btnLane').onclick = () => { R.lateral = R.lateral < -1 ? 0.2 : -1.6; };
     $('#btnSync').onclick = () => this.syncPanel();
+    $('#btnData').onclick = () => this.toggleView();
   },
   key(e) {
     const R = this.ride; if (!R) return; if (e.target.tagName === 'INPUT') return;
@@ -344,12 +367,13 @@ const App = {
   hudDevices() { const b = BLE.bike; $('#hBike').className = 'pill ' + (b?.server?.connected ? 'ok' : this.ride?.demo ? 'demo' : 'bad'); $('#hBike').textContent = b ? (b.server?.connected ? 'BIKE' : 'BIKE…') : 'DEMO'; const hr = BLE.heartRate(); $('#hHr').className = 'pill ' + (hr ? 'ok' : 'bad'); $('#hHr').textContent = BLE.hr.map(h => h.name.split(' ')[0]).join(' + ') || 'NO HR'; },
   hud() {
     const R = this.ride, S = Settings.get(); if (!R) return;
+    if (R.view === 'data') Dash.update(R);
     const p = Math.round(R.avg3()), wkg = p / S.weight, g = R.route.at(R.s + 4).g;
     $('#hPow').textContent = p; $('#hWkg').textContent = wkg.toFixed(1);
     $('#hPowZ').style.background = ZONE_COL[pwrZone(p, S.ftp)];
     $('#hCad').textContent = Math.round(R.cadence);
     const hr = R.hr; $('#hHrV').textContent = hr || '–'; $('#hHrZ').textContent = hr ? 'Z' + hrZone(hr, S.maxHr) : ''; $('#hrBlock').style.setProperty('--z', hr ? ZONE_COL[hrZone(hr, S.maxHr) + 1] : '#444');
-    $('#hSpd').textContent = (R.v * 3.6).toFixed(1); $('#hDist').textContent = (R.s / 1000).toFixed(2); $('#hElev').textContent = Math.round(R.gain); $('#hTime').textContent = fmtTime(R.t);
+    $('#hSpd').textContent = (R.v * 3.6).toFixed(1); $('#hDist').textContent = ((R.mode === 'video' ? R.s : R.dist) / 1000).toFixed(2); $('#hElev').textContent = Math.round(R.gain); $('#hTime').textContent = fmtTime(R.t);
     $('#hGrade').textContent = (g >= 0 ? '' : '−') + Math.abs(g).toFixed(1); $('#gradeBox').style.background = g > 9 ? '#b91c1c' : g > 6 ? '#ea580c' : g > 3 ? '#ca8a04' : g > -2 ? '#1f2937' : '#1d4ed8';
     $('#hLvl').textContent = R.level; $('#hGear').textContent = R.mode === 'free' ? R.level : R.gear; $('#freeLvl').textContent = R.level; $('#btnLvl').classList.toggle('manual', R.manualLevel != null);
     $('#hDraft').hidden = R.draft < 0.08;
@@ -361,7 +385,7 @@ const App = {
       if (!this._wkT || R.t - this._wkT > 1) { this._wkT = R.t; drawWorkout($('#wkCanvas'), this.ride.o.workout, { now: R.t }); }
     }
     // Profile marker + riders
-    if (this.profileMap && !R.o.focus) {
+    if (this.profileMap && R.view === '3d') {
       const mk = $('#profMe'), x = this.profileMap.X(R.s); mk.style.left = x + 'px';
       $('#profGhost').hidden = R.ghostS == null; if (R.ghostS != null) $('#profGhost').style.left = this.profileMap.X(R.ghostS) + 'px';
     }

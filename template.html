@@ -166,6 +166,29 @@ body.free .gearbox{display:none}
 #freeBox{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);display:flex;align-items:center;gap:22px;pointer-events:auto;font-family:var(--fc)}
 #freeBox button{width:96px;height:96px;border-radius:50%;background:rgba(255,255,255,.08);border:1px solid rgba(255,255,255,.15);font-size:52px;font-weight:700}#freeBox button:active{background:var(--acc)}
 #freeBox div{text-align:center;min-width:170px}#freeBox b{display:block;font-size:120px;font-weight:800;line-height:1}#freeBox small{font-size:14px;letter-spacing:.18em;color:#a9b4c4}
+body.focus .hTop,body.focus .hSide,body.focus #riders,body.focus #prof,body.focus #wkBar,body.focus #tgtBox,body.focus #hDraft,body.focus .gearbox,body.focus #demoBox{display:none!important}
+#dash{position:absolute;inset:0;padding:max(12px,env(safe-area-inset-top)) 12px 70px;display:flex;flex-direction:column;gap:10px;pointer-events:auto;font-family:var(--fc);overflow:auto}
+.dRow{display:grid;gap:10px}.dRow.big{grid-template-columns:repeat(auto-fit,minmax(170px,1fr))}.dRow.small{grid-template-columns:repeat(auto-fit,minmax(118px,1fr))}
+.dRow.charts{grid-template-columns:2fr 1fr 1fr;flex:1;min-height:200px}.dRow.ctx{grid-template-columns:2fr 1fr;min-height:150px}
+.dT{position:relative;overflow:hidden;background:rgba(21,28,40,.9);border:1px solid var(--line);border-radius:16px;padding:10px 14px}
+.dT small{display:block;font-size:12px;letter-spacing:.16em;color:#a9b4c4;font-weight:700}.dT b{display:block;font-size:40px;font-weight:800;line-height:1.05}.dT em{font-style:normal;color:#a9b4c4;font-size:14px;font-weight:600}
+.dRow.big .dT b{font-size:clamp(54px,8vw,92px)}.dT .u{font-size:.4em;margin-left:4px;color:#a9b4c4}
+.dT.pow b{color:#fff}.dT.hr b{color:#ff8a9b}.zbar{position:absolute;left:0;bottom:0;height:5px;width:0;transition:width .4s,background .4s}
+.dT.tgt{border-width:2px}.dT.tgt[data-state=on]{border-color:#22c55e}.dT.tgt[data-state=low]{border-color:#3b82f6}.dT.tgt[data-state=high]{border-color:#ef4444}.dT.tgt .zbar{background:var(--acc)}
+.dT.lvl .lv{display:flex;align-items:center;gap:8px}.dT.lvl button{width:40px;height:40px;border-radius:10px;background:rgba(255,255,255,.08);font-size:24px;font-weight:700}.dT.lvl b{min-width:44px;text-align:center}
+.dC{background:rgba(21,28,40,.9);border:1px solid var(--line);border-radius:16px;padding:10px 12px;display:flex;flex-direction:column;min-height:0}
+.dH{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}.dH small{font-size:12px;letter-spacing:.14em;color:#a9b4c4;font-weight:700}.dH span{font-size:13px;color:#a9b4c4;font-family:var(--fn)}
+.dH .k{display:inline-block;width:10px;height:10px;border-radius:2px;margin:0 4px 0 10px;vertical-align:-1px}.k.p{background:#f97316}.k.h{background:#ff4d6d}
+.dC canvas{flex:1;width:100%;min-height:0;display:block}
+.zones{display:flex;flex-direction:column;justify-content:space-around;flex:1;gap:4px}.zones div{display:grid;grid-template-columns:96px 1fr 54px;align-items:center;gap:8px;font-family:var(--fn);font-size:12px;color:#c0cad8}
+.zones i{display:block;height:14px;border-radius:4px;min-width:2px;transition:width .5s}.zones em{font-style:normal;text-align:right;font-family:var(--fc);font-size:15px;color:#fff}
+.profWrap{position:relative;flex:1;min-height:0}.profWrap canvas{position:absolute;inset:0;width:100%;height:100%}#dProfMe{position:absolute;top:0;bottom:0;width:2px;background:#fff;box-shadow:0 0 8px #fff}
+.ahead,.bests{flex:1;display:flex;align-items:flex-end;gap:5px;min-height:90px}.ahead div,.bests div{flex:1;height:100%;display:flex;flex-direction:column;justify-content:flex-end;align-items:center;gap:3px}
+.ahead i,.bests i{display:block;width:100%;border-radius:4px 4px 0 0;min-height:2px}.ahead span,.bests span{font-size:12px;color:#a9b4c4;font-family:var(--fn)}.bests b{font-size:18px}
+body.focus .hBot{justify-content:flex-end;pointer-events:none}body.focus .hBot .ctrl{pointer-events:auto}
+@media (max-width:820px){.dRow.charts,.dRow.ctx{grid-template-columns:1fr}.dRow.charts{min-height:auto}.dC.wide canvas,#dLine{height:160px}.zones{min-height:150px}}
+#dash.single .dRow.ctx{grid-template-columns:1fr}body.focus #toasts{top:auto;bottom:74px}
+.lens{display:flex;flex-wrap:wrap;gap:6px}.lens .sm{min-width:52px;font-size:15px;padding:9px 10px}.lens .sm.on{background:var(--acc);border-color:var(--acc);color:#fff}
 #pausedOv{position:absolute;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45);font-family:var(--fc);font-size:64px;font-weight:800;letter-spacing:.2em;pointer-events:none}
 @media (max-width:760px){#riders{display:none}.pow b{font-size:44px}.blk{min-width:62px;padding:6px 8px}.blk b{font-size:26px}.hTop{left:12px;transform:none}#gradeBox b{font-size:32px}#tgtBox{top:96px}.hide-s{display:none}}
 </style>
@@ -202,6 +225,7 @@ body.free .gearbox{display:none}
     <div id="tgtBox" class="glass" hidden><div><small id="tLbl">TARGET</small><b><span id="tW">0</span> W</b></div><div><small>LEFT</small><b id="tRem">0:00</b></div><div><small>CADENCE</small><b id="tCad" style="font-size:24px"></b></div></div>
     <div id="wkBar" class="glass" hidden><canvas id="wkCanvas"></canvas></div>
     <div id="demoBox" class="glass" hidden>DEMO · power <b id="demoV">150 W</b><input type="range" id="demoP" min="0" max="600" step="5" value="150"><div style="color:#a9b4c4;margin-top:4px">↑ ↓ keys · + − gears · C camera · L lane</div></div>
+    <div id="dash" hidden></div>
     <div id="freeBox" hidden><button id="freeDn">−</button><div><b id="freeLvl">6</b><small>RESISTANCE LEVEL</small></div><button id="freeUp">+</button></div>
     <div id="toasts"></div>
     <div id="syncBox" class="glass" hidden></div>
@@ -209,7 +233,7 @@ body.free .gearbox{display:none}
       <div id="prof" class="glass"><canvas id="profCanvas"></canvas><i id="profGhost" hidden></i><i id="profMe"></i></div>
       <div class="ctrl">
         <div class="glass gearbox"><button id="gearDn">−</button><div class="gv"><b id="hGear">6</b><small>GEAR</small></div><button id="gearUp">+</button><button id="btnLvl" title="Toggle manual resistance"><b id="hLvl" style="font-size:22px;display:block">6</b><small style="font-size:10px;letter-spacing:.12em;color:#a9b4c4">LEVEL</small></button></div>
-        <div class="btns"><button class="glass" id="btnSync" hidden style="color:#ffd166">SYNC</button><button class="glass" id="btnView">CAM</button><button class="glass" id="btnLane">LANE</button><button class="glass" id="btnPause">❚❚</button><button class="glass" id="btnEnd" style="color:#ff9b9b">END</button></div>
+        <div class="btns"><button class="glass" id="btnData" hidden style="color:#9ad1ff">DATA</button><button class="glass" id="btnSync" hidden style="color:#ffd166">SYNC</button><button class="glass" id="btnView">CAM</button><button class="glass" id="btnLane">LANE</button><button class="glass" id="btnPause">❚❚</button><button class="glass" id="btnEnd" style="color:#ff9b9b">END</button></div>
       </div>
     </div>
     <div id="pausedOv" hidden>PAUSED</div>
