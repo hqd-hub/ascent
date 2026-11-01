@@ -56,7 +56,7 @@ class Ride {
     const d = BLE.data, fresh = now - d.t < 3500;
     this.cadence = fresh ? d.cadence : 0;
     let p = fresh ? d.power : 0;
-    if (p <= 0 && this.cadence > 20) p = this.cadence * (0.45 + this.level * 0.11) * 1.1; // estimate if bike reports no power
+    if (S.powerSource === 'estimate' || (p <= 0 && this.cadence > 20)) p = estimatePower(this.cadence, this.level); // bike watts ignore resistance, or none reported
     this.power = p; this.hr = BLE.heartRate();
   }
 

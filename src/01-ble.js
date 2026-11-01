@@ -8,7 +8,7 @@ const U = (n) => '0000' + n.toString(16).padStart(4, '0') + '-0000-1000-8000-008
 const FITSHOW_SVC = U(0xfff0), FITSHOW_NOTIFY = U(0xfff1), FITSHOW_WRITE = U(0xfff2);
 const FTMS_SVC = U(0x1826), FTMS_BIKE_DATA = U(0x2ad2), FTMS_CP = U(0x2ad9), FTMS_STATUS = U(0x2ada);
 const CPS_SVC = U(0x1818), CPS_MEAS = U(0x2a63), CSC_SVC = U(0x1816), HR_SVC = U(0x180d), HR_MEAS = U(0x2a37);
-const errText = (e) => (e && (e.name ? e.name + ': ' : '') + (e.message || e)) || String(e);
+const errText = (e) => { if (e == null) return 'unknown error'; if (typeof e !== 'object') return String(e); const s = (e.name ? e.name + ': ' : '') + (e.message || e.code || ''); return s || JSON.stringify(e) || 'unknown error'; };
 const isCancel = (e) => /cancel/i.test(String(e && e.message || e));
 
 // Byte 4 of the VirtuFit/FitShow 32-level table (verbatim from qdomyos-zwift fitplusbike::forceResistance)
@@ -41,14 +41,27 @@ const BLE = {
     const el = document.getElementById('bleLog'); if (el && el.offsetParent) { el.textContent = this.log.slice(-120).join('\n'); el.scrollTop = 1e9; }
   },
 
+  // The Toputure shows up as TWO peripherals ("Toputure TEB5" with FitShow only, "Sport02-xxxx" with FitShow + FTMS).
+  // Ascent can hold several "links" at once: data is read from all of them and resistance is sent to every one that accepts it.
+  links: [],
+  facade() {
+    const self = this;
+    if (!this.bike) this.bike = { protocol: 'none',
+      get name() { return self.links.map(l => l.name).join(' + ') || 'Bike'; },
+      get device() { return self.links[0]?.device; },
+      server: { get connected() { return self.links.some(l => l.server?.connected); } },
+      get fsWrite() { return self.links.some(l => l.fsWrite); },
+      get ftmsCp() { return self.links.some(l => l.ftmsCp); } };
+    return this.bike;
+  },
   async connectBike(showAll) {
     if (!this.supported) throw new Error('This browser has no Web Bluetooth. Use Chrome or Edge on Mac/Windows/Android, or the Bluefy browser on iPad/iPhone.');
     const optionalServices = [FTMS_SVC, FITSHOW_SVC, CPS_SVC, CSC_SVC];
     let device;
     this.addLog('··', 'opening Bluetooth chooser' + (showAll ? ' (all devices)' : '') + ' · ' + navigator.userAgent.slice(0, 80));
     const tries = showAll ? [{ acceptAllDevices: true, optionalServices }] : [
-      { filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }], optionalServices },
-      { filters: [{ namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }], optionalServices },
+      { filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }, { namePrefix: 'Sport' }], optionalServices },
+      { filters: [{ namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }, { namePrefix: 'Sport' }], optionalServices },
       { acceptAllDevices: true, optionalServices }, { acceptAllDevices: true }];
     let lastErr;
     for (const opt of tries) {
@@ -56,87 +69,87 @@ const BLE = {
       catch (e) { lastErr = e; this.addLog('!!', 'chooser failed (' + (opt.acceptAllDevices ? 'all' : 'filtered') + '): ' + errText(e)); if (isCancel(e) || e.name === 'NotFoundError') throw e; }
     }
     if (!device) throw lastErr;
-    if (this.bike) this.disconnectBike();
-    device.addEventListener('gattserverdisconnected', () => this.onBikeDisconnect());
-    this.bike = { device, name: device.name || 'Bike', protocol: 'none' };
-    try { await this.setupBike(); }
-    catch (e) { this.addLog('!!', 'setup failed: ' + e.message); const d = this.bike?.device; this.bike = null; try { d?.gatt.disconnect(); } catch (x) {} this.emit(); throw new Error('Found "' + (device.name || 'device') + '" but couldn\u2019t connect: ' + e.message); }
-    if (!b_hasService(this.bike)) { this.addLog('!!', 'no FTMS or FitShow service on ' + device.name); }
+    let L = this.links.find(l => l.device.id === device.id);
+    if (!L) { L = { device, name: (device.name || 'Bike').trim() }; this.links.push(L); device.addEventListener('gattserverdisconnected', () => this.onLinkDisconnect(L)); }
+    this.facade();
+    try { await this.setupLink(L); }
+    catch (e) { this.addLog('!!', 'setup failed: ' + errText(e)); this.links = this.links.filter(x => x !== L); try { device.gatt.disconnect(); } catch (x) {} if (!this.links.length) this.bike = null; this.emit(); throw new Error('Found "' + (device.name || 'device') + '" but couldn\u2019t connect: ' + (e.message || e)); }
     return this.bike;
   },
 
-  async setupBike() {
-    const b = this.bike; if (!b) return;
-    b.server = await b.device.gatt.connect();
-    this.addLog('··', `connected to ${b.name}`);
-    // FitShow proprietary channel
+  async setupLink(L) {
+    L.server = await L.device.gatt.connect();
+    this.addLog('··', `connected to ${L.name}`);
     try {
-      const svc = await b.server.getPrimaryService(FITSHOW_SVC);
-      b.fsWrite = await svc.getCharacteristic(FITSHOW_WRITE);
+      const svc = await L.server.getPrimaryService(FITSHOW_SVC);
+      L.fsWrite = await svc.getCharacteristic(FITSHOW_WRITE);
       const n = await svc.getCharacteristic(FITSHOW_NOTIFY);
-      n.addEventListener('characteristicvaluechanged', e => this.onFitShow(new Uint8Array(e.target.value.buffer)));
+      n.addEventListener('characteristicvaluechanged', e => this.onFitShow(new Uint8Array(e.target.value.buffer), L));
       await n.startNotifications();
-      this.addLog('··', 'FitShow FFF0 found');
-      await this.fitshowInit();
-    } catch (e) { this.addLog('··', 'no FitShow service (' + e.message + ')'); }
-    // FTMS
+      this.addLog('··', L.name + ': FitShow FFF0 found');
+      await this.fitshowInit(L);
+    } catch (e) { this.addLog('··', L.name + ': no FitShow service'); }
     try {
-      const svc = await b.server.getPrimaryService(FTMS_SVC);
+      const svc = await L.server.getPrimaryService(FTMS_SVC);
       const d = await svc.getCharacteristic(FTMS_BIKE_DATA);
-      d.addEventListener('characteristicvaluechanged', e => this.onFtms(e.target.value));
+      d.addEventListener('characteristicvaluechanged', e => this.onFtms(e.target.value, L));
       await d.startNotifications();
       try {
-        b.ftmsCp = await svc.getCharacteristic(FTMS_CP);
-        b.ftmsCp.addEventListener('characteristicvaluechanged', e => this.addLog('<<', 'CP ' + hex(new Uint8Array(e.target.value.buffer))));
-        await b.ftmsCp.startNotifications();
-      } catch (e) { this.addLog('··', 'FTMS control point unavailable'); }
-      this.addLog('··', 'FTMS 1826 found');
-    } catch (e) { this.addLog('··', 'no FTMS service'); }
-    // Choose control protocol
-    const pref = Settings.get().protocol;
+        L.ftmsCp = await svc.getCharacteristic(FTMS_CP);
+        L.ftmsCp.addEventListener('characteristicvaluechanged', e => this.addLog('<<', L.name + ' CP ' + hex(new Uint8Array(e.target.value.buffer))));
+        await L.ftmsCp.startNotifications();
+      } catch (e) { this.addLog('··', L.name + ': FTMS control point unavailable'); }
+      this.addLog('··', L.name + ': FTMS 1826 found');
+    } catch (e) { this.addLog('··', L.name + ': no FTMS service'); }
+    await this.chooseProtocol();
+    clearInterval(this._poll);
+    let k = 0;
+    this._poll = setInterval(() => { // FitShow bikes only stream data while polled
+      const pkt = new Uint8Array((k++ % 2) ? [0x02, 0x43, 0x01, 0x42, 0x03] : [0x02, 0x42, 0x42, 0x03]);
+      for (const l of this.links) if (l.fsWrite && l.server?.connected) this.fsWriteTo(l, pkt, true);
+    }, 500);
+    this.lastLevelSent = 0;
+    this.emit();
+  },
+  async chooseProtocol() {
+    const b = this.facade(), pref = Settings.get().protocol;
     if (pref === 'fitshow' && b.fsWrite) b.protocol = 'fitshow';
     else if ((pref === 'ftms-level' || pref === 'ftms-sim') && b.ftmsCp) b.protocol = pref;
     else if (pref === 'none') b.protocol = 'none';
     else b.protocol = b.fsWrite ? 'fitshow' : (b.ftmsCp ? 'ftms-level' : 'none');
     if (b.protocol.startsWith('ftms')) await this.ftmsWrite([0x00]).catch(() => {}); // request control
     if (b.protocol === 'ftms-sim') await this.ftmsWrite([0x07]).catch(() => {}); // start
-    this.addLog('··', 'resistance control: ' + b.protocol);
-    clearInterval(this._poll);
-    if (b.fsWrite) {
-      let k = 0;
-      this._poll = setInterval(() => { // FitShow bikes only stream data while polled
-        if (!b.server?.connected) return;
-        const pkt = (k++ % 2) ? [0x02, 0x43, 0x01, 0x42, 0x03] : [0x02, 0x42, 0x42, 0x03];
-        this.fsWrite(new Uint8Array(pkt), true);
-      }, 500);
-    }
-    this.lastLevelSent = 0;
-    this.emit();
+    this.addLog('··', 'resistance control: ' + b.protocol + ' → ' + this.links.filter(l => b.protocol === 'fitshow' ? l.fsWrite : l.ftmsCp).map(l => l.name).join(', '));
   },
 
-  async fitshowInit() {
+  async fitshowInit(L) {
     const seq = [[0x02,0x42,0x42,0x03],[0x02,0x42,0x42,0x03],[0x02,0x41,0x02,0x43,0x03],[0x02,0x41,0x03,0x42,0x03],
       [0x02,0x44,0x01,0x45,0x03],[0x02,0x44,0x0a,0x00,0x00,0x00,0x00,0x3c,0xaa,0x18,0x00,0xc0,0x03],[0x02,0x42,0x42,0x03],
       [0x02,0x44,0x0b,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4e,0x03],[0x02,0x44,0x02,0x46,0x03]];
-    for (const p of seq) { await this.fsWrite(new Uint8Array(p)); await wait(120); }
+    for (const p of seq) { await this.fsWriteTo(L, new Uint8Array(p)); await wait(120); }
   },
 
   _fsQueue: Promise.resolve(),
-  fsWrite(u8, quiet) {
-    const c = this.bike?.fsWrite; if (!c) return Promise.resolve();
+  fsWriteTo(L, u8, quiet) {
+    const c = L?.fsWrite; if (!c) return Promise.resolve();
     this._fsQueue = this._fsQueue.then(async () => {
       try {
         if (c.writeValueWithoutResponse) await c.writeValueWithoutResponse(u8); else await c.writeValue(u8);
-        if (!quiet) this.addLog('>>', 'FFF2 ' + hex(u8));
-      } catch (e) { this.addLog('!!', 'write failed ' + e.message); }
+        if (!quiet) this.addLog('>>', L.name + ' FFF2 ' + hex(u8));
+      } catch (e) { if (!quiet) this.addLog('!!', L.name + ' write failed: ' + errText(e)); }
     });
     return this._fsQueue;
   },
+  fsWrite(u8, quiet) { return Promise.all(this.links.filter(l => l.fsWrite && l.server?.connected).map(l => this.fsWriteTo(l, u8, quiet))); },
   async ftmsWrite(arr) {
-    const c = this.bike?.ftmsCp; if (!c) return;
     const u8 = new Uint8Array(arr);
-    this.addLog('>>', 'CP ' + hex(u8));
-    try { await (c.writeValueWithResponse ? c.writeValueWithResponse(u8) : c.writeValue(u8)); } catch (e) { this.addLog('!!', e.message); }
+    for (const L of this.links.filter(l => l.ftmsCp && l.server?.connected)) {
+      this.addLog('>>', L.name + ' CP ' + hex(u8));
+      const c = L.ftmsCp, ways = [['withResponse', c.writeValueWithResponse], ['writeValue', c.writeValue], ['withoutResponse', c.writeValueWithoutResponse]].filter(x => typeof x[1] === 'function');
+      let done = false;
+      for (const [nm, fn] of (L.cpWay ? ways.filter(w => w[0] === L.cpWay) : ways)) { try { await fn.call(c, u8); L.cpWay = nm; done = true; break; } catch (e) { this.addLog('!!', L.name + ' CP ' + nm + ' failed: ' + errText(e)); } }
+      if (!done) L.cpWay = null;
+    }
   },
 
   // Resistance: level 1..maxLevel. Throttled; only sends on change.
@@ -160,8 +173,8 @@ const BLE = {
   },
   resendLevel() { const l = this.pendingLevel || this.lastLevelSent; this.lastLevelSent = 0; if (l) this.setLevel(l, true); },
 
-  onFitShow(u8) {
-    if (Settings.get().rawLog) this.addLog('<<', 'FFF1 ' + hex(u8));
+  onFitShow(u8, L) {
+    if (Settings.get().rawLog) this.addLog('<<', (L ? L.name + ' ' : '') + 'FFF1 ' + hex(u8));
     // 15-byte 02 42 02 status frame: [5]=resistance, [6]=cadence, [9..10]=power*10 (LE)
     if (u8.length === 15 && u8[0] === 0x02 && u8[1] === 0x42) {
       const level = u8[5], cad = u8[6], pw = ((u8[10] << 8) | u8[9]) / 10;
@@ -176,8 +189,8 @@ const BLE = {
     }
   },
 
-  onFtms(dv) {
-    if (Settings.get().rawLog) this.addLog('<<', '2AD2 ' + hex(new Uint8Array(dv.buffer)));
+  onFtms(dv, L) {
+    if (Settings.get().rawLog) this.addLog('<<', (L ? L.name + ' ' : '') + '2AD2 ' + hex(new Uint8Array(dv.buffer)));
     let i = 0; const f = dv.getUint16(i, true); i += 2;
     const out = {};
     if (!(f & 0x01)) { out.speed = dv.getUint16(i, true) / 100; i += 2; }
@@ -199,17 +212,16 @@ const BLE = {
     this.emit();
   },
 
-  async onBikeDisconnect() {
-    if (!this.bike) return;
-    this.addLog('!!', 'bike disconnected — reconnecting');
-    clearInterval(this._poll); this.emit();
-    for (let a = 0; a < 6 && this.bike; a++) {
+  async onLinkDisconnect(L) {
+    if (!this.links.includes(L)) return;
+    this.addLog('!!', L.name + ' disconnected, reconnecting'); this.emit();
+    for (let a = 0; a < 6 && this.links.includes(L); a++) {
       await wait(1500 * (a + 1));
-      try { await this.setupBike(); this.resendLevel(); toast('Bike reconnected'); return; } catch (e) {}
+      try { await this.setupLink(L); this.resendLevel(); toast(L.name + ' reconnected'); return; } catch (e) {}
     }
-    toast('Bike lost — tap Bike to reconnect');
+    toast(L.name + ' lost. Tap Connect bike to reconnect.');
   },
-  disconnectBike() { const b = this.bike; this.bike = null; clearInterval(this._poll); try { b?.device.gatt.disconnect(); } catch (e) {} this.emit(); },
+  disconnectBike() { const ls = this.links; this.links = []; this.bike = null; clearInterval(this._poll); for (const l of ls) { try { l.device.gatt.disconnect(); } catch (e) {} } this.emit(); },
 
   // Heart rate: standard 0x180D — Whoop ("Broadcast Heart Rate"), Apple Watch via HeartCast/BlueHeart/etc., chest straps
   async connectHR() {

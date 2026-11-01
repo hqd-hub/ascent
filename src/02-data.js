@@ -11,7 +11,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(this.key(k), JSON.stringify(v)); } catch (e) {} }
 };
 
-const BIKE_KEYS = ['maxLevel', 'minLevel', 'protocol', 'fsTable', 'rawLog', 'quality'];
+const BIKE_KEYS = ['maxLevel', 'minLevel', 'protocol', 'fsTable', 'rawLog', 'quality', 'powerSource', 'powerScale'];
 const RIDER_DEFAULTS = {
   name: 'Rider', weight: 75, ftp: 180, maxHr: 185,
   difficulty: 60,          // % of real gradient felt (Zwift "trainer difficulty")
@@ -23,9 +23,14 @@ const BIKE_DEFAULTS = {
   maxLevel: 32, minLevel: 1,
   protocol: 'auto',        // auto | fitshow | ftms-level | ftms-sim | none
   fsTable: 'kinomap',      // kinomap (VirtuFit table, verbatim) | clean (byte4 = 0)
-  rawLog: false, quality: 'medium'
+  rawLog: false, quality: 'medium',
+  powerSource: 'bike',     // bike | estimate (bike watts ignore resistance → estimate from cadence × level)
+  powerScale: 100          // % multiplier for the estimate
 };
 let _settings = {};
+// Watts from cadence + resistance level, for bikes whose own watt number ignores the resistance.
+// Generic magnetic spin-bike model, not calibrated for this bike: ~105 W at level 6/85 rpm, ~220 W at 16/90, ~330 W at 28/85.
+function estimatePower(cadence, level) { const S = Settings.get(); if (cadence < 15) return 0; return Math.round(cadence * (0.45 + level * 0.11) * 1.1 * (S.powerScale || 100) / 100); }
 const Settings = {
   load() { _settings = Object.assign({}, RIDER_DEFAULTS, BIKE_DEFAULTS, store.get('settings', {}), store.get('bike', {})); const u = _uid && store.get('users', []).find(x => x.id === _uid); if (u) { _settings.name = u.name; _settings.color = u.color; } },
   get: () => _settings,

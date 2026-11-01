@@ -268,7 +268,7 @@ const U = (n) => '0000' + n.toString(16).padStart(4, '0') + '-0000-1000-8000-008
 const FITSHOW_SVC = U(0xfff0), FITSHOW_NOTIFY = U(0xfff1), FITSHOW_WRITE = U(0xfff2);
 const FTMS_SVC = U(0x1826), FTMS_BIKE_DATA = U(0x2ad2), FTMS_CP = U(0x2ad9), FTMS_STATUS = U(0x2ada);
 const CPS_SVC = U(0x1818), CPS_MEAS = U(0x2a63), CSC_SVC = U(0x1816), HR_SVC = U(0x180d), HR_MEAS = U(0x2a37);
-const errText = (e) => (e && (e.name ? e.name + ': ' : '') + (e.message || e)) || String(e);
+const errText = (e) => { if (e == null) return 'unknown error'; if (typeof e !== 'object') return String(e); const s = (e.name ? e.name + ': ' : '') + (e.message || e.code || ''); return s || JSON.stringify(e) || 'unknown error'; };
 const isCancel = (e) => /cancel/i.test(String(e && e.message || e));
 
 // Byte 4 of the VirtuFit/FitShow 32-level table (verbatim from qdomyos-zwift fitplusbike::forceResistance)
@@ -301,14 +301,27 @@ const BLE = {
     const el = document.getElementById('bleLog'); if (el && el.offsetParent) { el.textContent = this.log.slice(-120).join('\n'); el.scrollTop = 1e9; }
   },
 
+  // The Toputure shows up as TWO peripherals ("Toputure TEB5" with FitShow only, "Sport02-xxxx" with FitShow + FTMS).
+  // Ascent can hold several "links" at once: data is read from all of them and resistance is sent to every one that accepts it.
+  links: [],
+  facade() {
+    const self = this;
+    if (!this.bike) this.bike = { protocol: 'none',
+      get name() { return self.links.map(l => l.name).join(' + ') || 'Bike'; },
+      get device() { return self.links[0]?.device; },
+      server: { get connected() { return self.links.some(l => l.server?.connected); } },
+      get fsWrite() { return self.links.some(l => l.fsWrite); },
+      get ftmsCp() { return self.links.some(l => l.ftmsCp); } };
+    return this.bike;
+  },
   async connectBike(showAll) {
     if (!this.supported) throw new Error('This browser has no Web Bluetooth. Use Chrome or Edge on Mac/Windows/Android, or the Bluefy browser on iPad/iPhone.');
     const optionalServices = [FTMS_SVC, FITSHOW_SVC, CPS_SVC, CSC_SVC];
     let device;
     this.addLog('··', 'opening Bluetooth chooser' + (showAll ? ' (all devices)' : '') + ' · ' + navigator.userAgent.slice(0, 80));
     const tries = showAll ? [{ acceptAllDevices: true, optionalServices }] : [
-      { filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }], optionalServices },
-      { filters: [{ namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }], optionalServices },
+      { filters: [{ services: [FTMS_SVC] }, { services: [FITSHOW_SVC] }, { namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }, { namePrefix: 'Sport' }], optionalServices },
+      { filters: [{ namePrefix: 'Toputure' }, { namePrefix: 'FS-' }, { namePrefix: 'TBE' }, { namePrefix: 'TEB' }, { namePrefix: 'Sport' }], optionalServices },
       { acceptAllDevices: true, optionalServices }, { acceptAllDevices: true }];
     let lastErr;
     for (const opt of tries) {
@@ -316,87 +329,87 @@ const BLE = {
       catch (e) { lastErr = e; this.addLog('!!', 'chooser failed (' + (opt.acceptAllDevices ? 'all' : 'filtered') + '): ' + errText(e)); if (isCancel(e) || e.name === 'NotFoundError') throw e; }
     }
     if (!device) throw lastErr;
-    if (this.bike) this.disconnectBike();
-    device.addEventListener('gattserverdisconnected', () => this.onBikeDisconnect());
-    this.bike = { device, name: device.name || 'Bike', protocol: 'none' };
-    try { await this.setupBike(); }
-    catch (e) { this.addLog('!!', 'setup failed: ' + e.message); const d = this.bike?.device; this.bike = null; try { d?.gatt.disconnect(); } catch (x) {} this.emit(); throw new Error('Found "' + (device.name || 'device') + '" but couldn\u2019t connect: ' + e.message); }
-    if (!b_hasService(this.bike)) { this.addLog('!!', 'no FTMS or FitShow service on ' + device.name); }
+    let L = this.links.find(l => l.device.id === device.id);
+    if (!L) { L = { device, name: (device.name || 'Bike').trim() }; this.links.push(L); device.addEventListener('gattserverdisconnected', () => this.onLinkDisconnect(L)); }
+    this.facade();
+    try { await this.setupLink(L); }
+    catch (e) { this.addLog('!!', 'setup failed: ' + errText(e)); this.links = this.links.filter(x => x !== L); try { device.gatt.disconnect(); } catch (x) {} if (!this.links.length) this.bike = null; this.emit(); throw new Error('Found "' + (device.name || 'device') + '" but couldn\u2019t connect: ' + (e.message || e)); }
     return this.bike;
   },
 
-  async setupBike() {
-    const b = this.bike; if (!b) return;
-    b.server = await b.device.gatt.connect();
-    this.addLog('··', `connected to ${b.name}`);
-    // FitShow proprietary channel
+  async setupLink(L) {
+    L.server = await L.device.gatt.connect();
+    this.addLog('··', `connected to ${L.name}`);
     try {
-      const svc = await b.server.getPrimaryService(FITSHOW_SVC);
-      b.fsWrite = await svc.getCharacteristic(FITSHOW_WRITE);
+      const svc = await L.server.getPrimaryService(FITSHOW_SVC);
+      L.fsWrite = await svc.getCharacteristic(FITSHOW_WRITE);
       const n = await svc.getCharacteristic(FITSHOW_NOTIFY);
-      n.addEventListener('characteristicvaluechanged', e => this.onFitShow(new Uint8Array(e.target.value.buffer)));
+      n.addEventListener('characteristicvaluechanged', e => this.onFitShow(new Uint8Array(e.target.value.buffer), L));
       await n.startNotifications();
-      this.addLog('··', 'FitShow FFF0 found');
-      await this.fitshowInit();
-    } catch (e) { this.addLog('··', 'no FitShow service (' + e.message + ')'); }
-    // FTMS
+      this.addLog('··', L.name + ': FitShow FFF0 found');
+      await this.fitshowInit(L);
+    } catch (e) { this.addLog('··', L.name + ': no FitShow service'); }
     try {
-      const svc = await b.server.getPrimaryService(FTMS_SVC);
+      const svc = await L.server.getPrimaryService(FTMS_SVC);
       const d = await svc.getCharacteristic(FTMS_BIKE_DATA);
-      d.addEventListener('characteristicvaluechanged', e => this.onFtms(e.target.value));
+      d.addEventListener('characteristicvaluechanged', e => this.onFtms(e.target.value, L));
       await d.startNotifications();
       try {
-        b.ftmsCp = await svc.getCharacteristic(FTMS_CP);
-        b.ftmsCp.addEventListener('characteristicvaluechanged', e => this.addLog('<<', 'CP ' + hex(new Uint8Array(e.target.value.buffer))));
-        await b.ftmsCp.startNotifications();
-      } catch (e) { this.addLog('··', 'FTMS control point unavailable'); }
-      this.addLog('··', 'FTMS 1826 found');
-    } catch (e) { this.addLog('··', 'no FTMS service'); }
-    // Choose control protocol
-    const pref = Settings.get().protocol;
+        L.ftmsCp = await svc.getCharacteristic(FTMS_CP);
+        L.ftmsCp.addEventListener('characteristicvaluechanged', e => this.addLog('<<', L.name + ' CP ' + hex(new Uint8Array(e.target.value.buffer))));
+        await L.ftmsCp.startNotifications();
+      } catch (e) { this.addLog('··', L.name + ': FTMS control point unavailable'); }
+      this.addLog('··', L.name + ': FTMS 1826 found');
+    } catch (e) { this.addLog('··', L.name + ': no FTMS service'); }
+    await this.chooseProtocol();
+    clearInterval(this._poll);
+    let k = 0;
+    this._poll = setInterval(() => { // FitShow bikes only stream data while polled
+      const pkt = new Uint8Array((k++ % 2) ? [0x02, 0x43, 0x01, 0x42, 0x03] : [0x02, 0x42, 0x42, 0x03]);
+      for (const l of this.links) if (l.fsWrite && l.server?.connected) this.fsWriteTo(l, pkt, true);
+    }, 500);
+    this.lastLevelSent = 0;
+    this.emit();
+  },
+  async chooseProtocol() {
+    const b = this.facade(), pref = Settings.get().protocol;
     if (pref === 'fitshow' && b.fsWrite) b.protocol = 'fitshow';
     else if ((pref === 'ftms-level' || pref === 'ftms-sim') && b.ftmsCp) b.protocol = pref;
     else if (pref === 'none') b.protocol = 'none';
     else b.protocol = b.fsWrite ? 'fitshow' : (b.ftmsCp ? 'ftms-level' : 'none');
     if (b.protocol.startsWith('ftms')) await this.ftmsWrite([0x00]).catch(() => {}); // request control
     if (b.protocol === 'ftms-sim') await this.ftmsWrite([0x07]).catch(() => {}); // start
-    this.addLog('··', 'resistance control: ' + b.protocol);
-    clearInterval(this._poll);
-    if (b.fsWrite) {
-      let k = 0;
-      this._poll = setInterval(() => { // FitShow bikes only stream data while polled
-        if (!b.server?.connected) return;
-        const pkt = (k++ % 2) ? [0x02, 0x43, 0x01, 0x42, 0x03] : [0x02, 0x42, 0x42, 0x03];
-        this.fsWrite(new Uint8Array(pkt), true);
-      }, 500);
-    }
-    this.lastLevelSent = 0;
-    this.emit();
+    this.addLog('··', 'resistance control: ' + b.protocol + ' → ' + this.links.filter(l => b.protocol === 'fitshow' ? l.fsWrite : l.ftmsCp).map(l => l.name).join(', '));
   },
 
-  async fitshowInit() {
+  async fitshowInit(L) {
     const seq = [[0x02,0x42,0x42,0x03],[0x02,0x42,0x42,0x03],[0x02,0x41,0x02,0x43,0x03],[0x02,0x41,0x03,0x42,0x03],
       [0x02,0x44,0x01,0x45,0x03],[0x02,0x44,0x0a,0x00,0x00,0x00,0x00,0x3c,0xaa,0x18,0x00,0xc0,0x03],[0x02,0x42,0x42,0x03],
       [0x02,0x44,0x0b,0x01,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x4e,0x03],[0x02,0x44,0x02,0x46,0x03]];
-    for (const p of seq) { await this.fsWrite(new Uint8Array(p)); await wait(120); }
+    for (const p of seq) { await this.fsWriteTo(L, new Uint8Array(p)); await wait(120); }
   },
 
   _fsQueue: Promise.resolve(),
-  fsWrite(u8, quiet) {
-    const c = this.bike?.fsWrite; if (!c) return Promise.resolve();
+  fsWriteTo(L, u8, quiet) {
+    const c = L?.fsWrite; if (!c) return Promise.resolve();
     this._fsQueue = this._fsQueue.then(async () => {
       try {
         if (c.writeValueWithoutResponse) await c.writeValueWithoutResponse(u8); else await c.writeValue(u8);
-        if (!quiet) this.addLog('>>', 'FFF2 ' + hex(u8));
-      } catch (e) { this.addLog('!!', 'write failed ' + e.message); }
+        if (!quiet) this.addLog('>>', L.name + ' FFF2 ' + hex(u8));
+      } catch (e) { if (!quiet) this.addLog('!!', L.name + ' write failed: ' + errText(e)); }
     });
     return this._fsQueue;
   },
+  fsWrite(u8, quiet) { return Promise.all(this.links.filter(l => l.fsWrite && l.server?.connected).map(l => this.fsWriteTo(l, u8, quiet))); },
   async ftmsWrite(arr) {
-    const c = this.bike?.ftmsCp; if (!c) return;
     const u8 = new Uint8Array(arr);
-    this.addLog('>>', 'CP ' + hex(u8));
-    try { await (c.writeValueWithResponse ? c.writeValueWithResponse(u8) : c.writeValue(u8)); } catch (e) { this.addLog('!!', e.message); }
+    for (const L of this.links.filter(l => l.ftmsCp && l.server?.connected)) {
+      this.addLog('>>', L.name + ' CP ' + hex(u8));
+      const c = L.ftmsCp, ways = [['withResponse', c.writeValueWithResponse], ['writeValue', c.writeValue], ['withoutResponse', c.writeValueWithoutResponse]].filter(x => typeof x[1] === 'function');
+      let done = false;
+      for (const [nm, fn] of (L.cpWay ? ways.filter(w => w[0] === L.cpWay) : ways)) { try { await fn.call(c, u8); L.cpWay = nm; done = true; break; } catch (e) { this.addLog('!!', L.name + ' CP ' + nm + ' failed: ' + errText(e)); } }
+      if (!done) L.cpWay = null;
+    }
   },
 
   // Resistance: level 1..maxLevel. Throttled; only sends on change.
@@ -420,8 +433,8 @@ const BLE = {
   },
   resendLevel() { const l = this.pendingLevel || this.lastLevelSent; this.lastLevelSent = 0; if (l) this.setLevel(l, true); },
 
-  onFitShow(u8) {
-    if (Settings.get().rawLog) this.addLog('<<', 'FFF1 ' + hex(u8));
+  onFitShow(u8, L) {
+    if (Settings.get().rawLog) this.addLog('<<', (L ? L.name + ' ' : '') + 'FFF1 ' + hex(u8));
     // 15-byte 02 42 02 status frame: [5]=resistance, [6]=cadence, [9..10]=power*10 (LE)
     if (u8.length === 15 && u8[0] === 0x02 && u8[1] === 0x42) {
       const level = u8[5], cad = u8[6], pw = ((u8[10] << 8) | u8[9]) / 10;
@@ -436,8 +449,8 @@ const BLE = {
     }
   },
 
-  onFtms(dv) {
-    if (Settings.get().rawLog) this.addLog('<<', '2AD2 ' + hex(new Uint8Array(dv.buffer)));
+  onFtms(dv, L) {
+    if (Settings.get().rawLog) this.addLog('<<', (L ? L.name + ' ' : '') + '2AD2 ' + hex(new Uint8Array(dv.buffer)));
     let i = 0; const f = dv.getUint16(i, true); i += 2;
     const out = {};
     if (!(f & 0x01)) { out.speed = dv.getUint16(i, true) / 100; i += 2; }
@@ -459,17 +472,16 @@ const BLE = {
     this.emit();
   },
 
-  async onBikeDisconnect() {
-    if (!this.bike) return;
-    this.addLog('!!', 'bike disconnected — reconnecting');
-    clearInterval(this._poll); this.emit();
-    for (let a = 0; a < 6 && this.bike; a++) {
+  async onLinkDisconnect(L) {
+    if (!this.links.includes(L)) return;
+    this.addLog('!!', L.name + ' disconnected, reconnecting'); this.emit();
+    for (let a = 0; a < 6 && this.links.includes(L); a++) {
       await wait(1500 * (a + 1));
-      try { await this.setupBike(); this.resendLevel(); toast('Bike reconnected'); return; } catch (e) {}
+      try { await this.setupLink(L); this.resendLevel(); toast(L.name + ' reconnected'); return; } catch (e) {}
     }
-    toast('Bike lost — tap Bike to reconnect');
+    toast(L.name + ' lost. Tap Connect bike to reconnect.');
   },
-  disconnectBike() { const b = this.bike; this.bike = null; clearInterval(this._poll); try { b?.device.gatt.disconnect(); } catch (e) {} this.emit(); },
+  disconnectBike() { const ls = this.links; this.links = []; this.bike = null; clearInterval(this._poll); for (const l of ls) { try { l.device.gatt.disconnect(); } catch (e) {} } this.emit(); },
 
   // Heart rate: standard 0x180D — Whoop ("Broadcast Heart Rate"), Apple Watch via HeartCast/BlueHeart/etc., chest straps
   async connectHR() {
@@ -519,7 +531,7 @@ const store = {
   set(k, v) { try { localStorage.setItem(this.key(k), JSON.stringify(v)); } catch (e) {} }
 };
 
-const BIKE_KEYS = ['maxLevel', 'minLevel', 'protocol', 'fsTable', 'rawLog', 'quality'];
+const BIKE_KEYS = ['maxLevel', 'minLevel', 'protocol', 'fsTable', 'rawLog', 'quality', 'powerSource', 'powerScale'];
 const RIDER_DEFAULTS = {
   name: 'Rider', weight: 75, ftp: 180, maxHr: 185,
   difficulty: 60,          // % of real gradient felt (Zwift "trainer difficulty")
@@ -531,9 +543,14 @@ const BIKE_DEFAULTS = {
   maxLevel: 32, minLevel: 1,
   protocol: 'auto',        // auto | fitshow | ftms-level | ftms-sim | none
   fsTable: 'kinomap',      // kinomap (VirtuFit table, verbatim) | clean (byte4 = 0)
-  rawLog: false, quality: 'medium'
+  rawLog: false, quality: 'medium',
+  powerSource: 'bike',     // bike | estimate (bike watts ignore resistance → estimate from cadence × level)
+  powerScale: 100          // % multiplier for the estimate
 };
 let _settings = {};
+// Watts from cadence + resistance level, for bikes whose own watt number ignores the resistance.
+// Generic magnetic spin-bike model, not calibrated for this bike: ~105 W at level 6/85 rpm, ~220 W at 16/90, ~330 W at 28/85.
+function estimatePower(cadence, level) { const S = Settings.get(); if (cadence < 15) return 0; return Math.round(cadence * (0.45 + level * 0.11) * 1.1 * (S.powerScale || 100) / 100); }
 const Settings = {
   load() { _settings = Object.assign({}, RIDER_DEFAULTS, BIKE_DEFAULTS, store.get('settings', {}), store.get('bike', {})); const u = _uid && store.get('users', []).find(x => x.id === _uid); if (u) { _settings.name = u.name; _settings.color = u.color; } },
   get: () => _settings,
@@ -1193,7 +1210,7 @@ class Ride {
     const d = BLE.data, fresh = now - d.t < 3500;
     this.cadence = fresh ? d.cadence : 0;
     let p = fresh ? d.power : 0;
-    if (p <= 0 && this.cadence > 20) p = this.cadence * (0.45 + this.level * 0.11) * 1.1; // estimate if bike reports no power
+    if (S.powerSource === 'estimate' || (p <= 0 && this.cadence > 20)) p = estimatePower(this.cadence, this.level); // bike watts ignore resistance, or none reported
     this.power = p; this.hr = BLE.heartRate();
   }
 
@@ -1520,9 +1537,9 @@ const App = {
     $$('.hrchip').forEach(c => c.onclick = () => { if (confirmLite('Disconnect ' + c.textContent.trim() + '?')) BLE.removeHR(c.dataset.id); });
     if (this.ride) this.hudDevices();
   },
-  async connectBike(showAll) {
-    if (BLE.bike?.server?.connected && !showAll) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return null; }
-    try { await BLE.connectBike(showAll); toast('Bike connected · control: ' + BLE.bike.protocol); return null; }
+  async connectBike(showAll, add) {
+    if (BLE.bike?.server?.connected && !showAll && !add) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return null; }
+    try { await BLE.connectBike(showAll); toast('Connected: ' + BLE.bike.name); return null; }
     catch (e) { const msg = bleErrorText(e); BLE.addLog('!!', e.name + ': ' + e.message); if (msg) toast(msg, 'err'); return msg; }
   },
   async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); return h; } catch (e) { BLE.addLog('!!', e.name + ': ' + e.message); toast(bleErrorText(e).replace('the bike', 'the device'), 'err'); } },
@@ -1932,16 +1949,17 @@ const Setup = {
     const b = $('#setupBody');
     $('#setupSteps').innerHTML = dots;
     if (this.step === -1) { this.renderRiders(b); } else if (this.step === 0) {
-      const ok = BLE.bike?.server?.connected;
+      const ok = BLE.bike?.server?.connected, mods = BLE.links;
       b.innerHTML = `<div class="sIcon">🚲</div><h2>Connect your bike</h2>
-        <p>Turn on the Toputure and pedal for a second to wake it up. Then tap below and choose <b>Toputure TBE5</b> (or <b>FS-…</b>). If a <b>Sport02</b> device shows up, ignore it.</p>
-        ${BLE.supported ? `<button class="go" id="sBike">${ok ? '✓ ' + esc(BLE.bike.name) + ' connected' : 'Connect bike'}</button>` : `<div class="warn" style="margin:16px 0">This browser can't use Bluetooth. On iPad/iPhone use <b>Bluefy</b>. On a Mac use <b>Chrome</b>.</div>`}
+        <p>Pedal for a second to wake the bike, then tap <b>Connect bike</b> and choose <b>Sport02-…</b>. That's your bike's main module, and the bike's display shows when it's connected. If <b>Toputure TEB5</b> also appears, you can add it as a second device, but it isn't required.</p>
+        ${mods.length ? `<div class="hrList" style="margin:12px 0">${mods.map(l => `<div class="hrRow ${l.server?.connected ? 'ok' : ''}"><span>${esc(l.name)}</span><small style="width:auto">${[l.fsWrite ? 'FitShow' : '', l.ftmsCp ? 'FTMS' : ''].filter(Boolean).join(' + ') || 'no bike services'}${l.server?.connected ? '' : ' · reconnecting…'}</small></div>`).join('')}</div>` : ''}
+        ${BLE.supported ? `<button class="go ${ok ? 'sec2' : ''}" id="sBike">${ok ? '+ Add another device (optional)' : 'Connect bike'}</button>` : `<div class="warn" style="margin:16px 0">This browser can't use Bluetooth. On iPad/iPhone use <b>Bluefy</b>. On a Mac use <b>Chrome</b>.</div>`}
         <div class="warn" id="sAvail" hidden style="margin:12px 0;text-align:left">This device reports Bluetooth as <b>off or not allowed</b>. Turn Bluetooth on. On a Mac, allow Chrome under System Settings → Privacy & Security → Bluetooth. On iPad, allow Bluefy under Settings → Bluefy.</div>
-        ${this.bikeErr && !ok ? `<div class="warn" style="margin:12px 0;text-align:left">${esc(this.bikeErr)}</div>` : ''}
-        ${BLE.supported && !ok ? `<button class="lnk" id="sAll">Show all Bluetooth devices</button>` : ''}
+        ${this.bikeErr ? `<div class="warn" style="margin:12px 0;text-align:left">${esc(this.bikeErr)}</div>` : ''}
+        ${BLE.supported ? `<button class="lnk" id="sAll">Show all Bluetooth devices</button>` : ''}
         <button class="go ${ok ? '' : 'off'}" id="sNext" ${ok ? '' : 'disabled'}>Next: heart rate</button>
         <button class="lnk" id="sDemo">No bike here: try demo mode</button>`;
-      const doConnect = async (all) => { const btn = $('#sBike'); if (btn) { btn.disabled = true; btn.textContent = 'Opening Bluetooth…'; } this.bikeErr = await App.connectBike(all); this.render(); };
+      const doConnect = async (all) => { const btn = $('#sBike'); if (btn) { btn.disabled = true; btn.textContent = 'Opening Bluetooth…'; } this.bikeErr = await App.connectBike(all, true); this.render(); };
       $('#sBike') && ($('#sBike').onclick = () => doConnect(false));
       $('#sAll') && ($('#sAll').onclick = () => doConnect(true));
       if (navigator.bluetooth?.getAvailability) navigator.bluetooth.getAvailability().then(ok => { if (!ok && $('#sAvail')) $('#sAvail').hidden = false; }).catch(() => {});
@@ -1959,19 +1977,24 @@ const Setup = {
       $('#sHr').onclick = async () => { const h = await App.connectHR(); if (h && !Settings.get().hrPrimary) Settings.set({ hrPrimary: h.name }); this.render(); };
       $('#sNext').onclick = () => this.go(2); $('#sSkip').onclick = () => this.go(2);
     } else if (this.step === 2) {
-      const r = this.result;
+      const r = this.result, m = this.methods(), mi = this.methodIndex();
       b.innerHTML = `<div class="sIcon">⚙️</div><h2>Resistance test</h2>
-        <p>Pedal at an easy, steady pace. Ascent switches the bike between a <b>light</b> and a <b>heavy</b> level and checks that it really changes. It takes about 15 seconds.</p>
-        <div class="tLive"><div><b id="tCadL">0</b><small>RPM</small></div><div><b id="tPowL">0</b><small>WATTS</small></div><div><b id="tLvlL">–</b><small>BIKE LEVEL</small></div></div>
-        <div class="tBar"><i id="tProg"></i></div><p class="tMsg" id="tMsg">${r ? r.msg : 'Start pedalling, then tap Start test.'}</p>
-        ${!r || r.state === 'fail' ? `<button class="go" id="sTest" ${this.running ? 'disabled' : ''}>${r ? 'Try again' : 'Start test'}</button>` : ''}
-        ${r && r.state === 'ok' ? `<div class="row"><button class="go sec2" id="sNo">I didn't feel it</button><button class="go" id="sYes">Felt it: continue</button></div>` : ''}
-        ${r && r.state === 'fail' ? `<button class="lnk" id="sAnyway">Continue anyway (resistance may not change)</button><button class="lnk" id="sLog">Copy Bluetooth log</button>` : ''}`;
-      $('#sTest') && ($('#sTest').onclick = () => this.runTest());
-      $('#sYes') && ($('#sYes').onclick = () => { store.set('lastTest', { t: Date.now(), ok: true, protocol: BLE.bike?.protocol, table: Settings.get().fsTable }); this.go(3); });
-      $('#sNo') && ($('#sNo').onclick = () => { this.nextMethod(); this.runTest(); });
+        <p>Pedal at an easy, steady pace. Ascent sets the bike <b>light</b> for 5 seconds, then <b>heavy</b> for 6 seconds. You tell it whether you felt the change.</p>
+        <div class="tLive"><div><b id="tCadL">0</b><small>RPM</small></div><div><b id="tPhase">–</b><small>NOW</small></div><div><b id="tLvlL">–</b><small>LEVEL SENT</small></div></div>
+        <div class="tBar"><i id="tProg"></i></div>
+        <p class="note" style="margin-top:8px">Method ${mi + 1} of ${m.length}: <b>${esc(this.methodLabel(m[mi]))}</b> → ${esc(BLE.links.filter(l => (m[mi] || [''])[0] === 'fitshow' ? l.fsWrite : l.ftmsCp).map(l => l.name).join(', ') || '–')}</p>
+        <p class="tMsg" id="tMsg">${r ? r.msg : 'Start pedalling, then tap Start test.'}</p>
+        ${!r || r.state === 'fail' ? `<button class="go" id="sTest" ${this.running ? 'disabled' : ''}>${r ? 'Start again from method 1' : 'Start test'}</button>` : ''}
+        ${r && r.state === 'ask' ? `<div class="row"><button class="go sec2" id="sNo">No change: try next method</button><button class="go" id="sYes">Yes, it got heavier</button></div><button class="lnk" id="sAgain">Run this method again</button>` : ''}
+        ${r && r.state === 'ok' ? `<button class="go" id="sYes">Continue</button>` : ''}
+        ${r && r.state === 'fail' ? `<button class="lnk" id="sAnyway">Continue anyway (resistance won't change)</button>` : ''}
+        <button class="lnk" id="sLog">Copy Bluetooth log</button>`;
+      $('#sTest') && ($('#sTest').onclick = () => { this.applyMethod(m[0]); this.runTest(); });
+      $('#sAgain') && ($('#sAgain').onclick = () => this.runTest());
+      $('#sYes') && ($('#sYes').onclick = () => this.confirmWorks());
+      $('#sNo') && ($('#sNo').onclick = () => { if (this.nextMethod()) this.runTest(); else { this.result = { state: 'fail', msg: 'None of the methods changed the resistance. Check that Sport02 is connected (step 2), then copy the Bluetooth log and send it to Claude.' }; this.render(); } });
       $('#sAnyway') && ($('#sAnyway').onclick = () => this.go(3));
-      $('#sLog') && ($('#sLog').onclick = () => { navigator.clipboard?.writeText(BLE.log.join('\n')); toast('Log copied. Paste it to Claude.'); });
+      $('#sLog').onclick = () => { navigator.clipboard?.writeText(BLE.log.join('\n')); toast('Log copied. Paste it to Claude.'); };
       this.live();
     } else {
       const S = Settings.get();
@@ -2017,39 +2040,45 @@ const Setup = {
   live() {
     if ($('#setup').hidden) return;
     if (this.step === 0 || this.step === 1) { const el = $('#sHrList'); if (el) el.innerHTML = this.hrList(); const n = $('#sNext'); if (this.step === 1 && n && BLE.hr.some(h => h.bpm)) { n.disabled = false; n.classList.remove('off'); } return; }
-    if (this.step === 2) { const d = BLE.data, fresh = performance.now() - d.t < 3500; $('#tCadL') && ($('#tCadL').textContent = fresh ? Math.round(d.cadence) : 0, $('#tPowL').textContent = fresh ? Math.round(d.power) : 0, $('#tLvlL').textContent = d.level || '–'); }
+    if (this.step === 2) { const d = BLE.data, fresh = performance.now() - d.t < 3500; $('#tCadL') && ($('#tCadL').textContent = fresh ? Math.round(d.cadence) : 0, $('#tLvlL').textContent = this.testLevel || '–', $('#tPhase').textContent = this.phase || '–'); }
   },
 
-  methods() { const b = BLE.bike, m = []; if (b?.fsWrite) m.push(['fitshow', 'kinomap'], ['fitshow', 'clean']); if (b?.ftmsCp) m.push(['ftms-level', 'kinomap']); return m; },
-  applyMethod([proto, table]) { Settings.set({ protocol: proto, fsTable: table }); if (BLE.bike) { BLE.bike.protocol = proto; if (proto.startsWith('ftms')) BLE.ftmsWrite([0x00]); } },
-  nextMethod() { const m = this.methods(), cur = m.findIndex(([p, t]) => p === BLE.bike?.protocol && (p !== 'fitshow' || t === Settings.get().fsTable)); const nx = m[cur + 1]; if (nx) { this.applyMethod(nx); return true; } return false; },
+  methods() { const b = BLE.bike, m = []; if (b?.fsWrite) m.push(['fitshow', 'kinomap'], ['fitshow', 'clean']); if (b?.ftmsCp) m.push(['ftms-level', 'kinomap'], ['ftms-sim', 'kinomap']); return m; },
+  methodLabel(x) { return !x ? '–' : x[0] === 'fitshow' ? 'FitShow, ' + (x[1] === 'clean' ? 'clean table' : 'Kinomap table') : x[0] === 'ftms-level' ? 'FTMS resistance level' : 'FTMS gradient simulation'; },
+  methodIndex() { const m = this.methods(), p = BLE.bike?.protocol, t = Settings.get().fsTable; const i = m.findIndex(([a, b]) => a === p && (a !== 'fitshow' || b === t)); return Math.max(0, i); },
+  applyMethod(x) { if (!x) return; Settings.set({ protocol: x[0], fsTable: x[1] }); if (BLE.bike) BLE.bike.protocol = x[0]; if (x[0].startsWith('ftms')) { BLE.ftmsWrite([0x00]); if (x[0] === 'ftms-sim') BLE.ftmsWrite([0x07]); } },
+  nextMethod() { const m = this.methods(), nx = m[this.methodIndex() + 1]; if (nx) { this.applyMethod(nx); return true; } return false; },
+  sendTest(level, grade) { this.testLevel = level; if (BLE.bike?.protocol === 'ftms-sim') { BLE.lastSendT = 0; BLE.setSimGrade(grade); } else BLE.setLevel(level, true); },
 
   async runTest() {
     if (this.running) return; if (!BLE.bike?.server?.connected) { toast('Bike not connected', 'err'); return this.go(0); }
     this.running = true; this.result = { state: 'run', msg: 'Pedal steadily…' }; this.render();
+    const raw = Settings.get().rawLog; Settings.set({ rawLog: true });
     const msg = (t) => { const el = $('#tMsg'); if (el) el.textContent = t; }, prog = (f) => { const el = $('#tProg'); if (el) el.style.width = (f * 100) + '%'; };
-    // wait for pedalling
-    let w = 0; while (performance.now() - BLE.data.t > 3500 || BLE.data.cadence < 35) { msg('Start pedalling (above 40 rpm)…'); await wait(500); if (++w > 60) { this.running = false; this.result = { state: 'fail', msg: 'No pedalling detected from the bike. Check that it is awake and connected.' }; return this.render(); } }
-    const S = Settings.get(), lo = Math.max(1, Math.round(S.maxLevel * 0.12)), hi = Math.round(S.maxLevel * 0.62);
-    const sample = async (level, label, f0) => {
-      BLE.setLevel(level, true); const out = []; const t0 = performance.now();
-      while (performance.now() - t0 < 6000) { await wait(250); prog(f0 + (performance.now() - t0) / 6000 * 0.45); msg(`${label}: level ${level}…`); if (performance.now() - t0 > 2500) { const d = BLE.data; if (d.cadence > 20) out.push({ p: d.power, c: d.cadence, l: d.level }); } if (performance.now() - t0 > 2000 && performance.now() - t0 < 2300) BLE.setLevel(level, true); }
-      const n = out.length || 1; return { p: out.reduce((a, x) => a + x.p, 0) / n, c: out.reduce((a, x) => a + x.c, 0) / n, l: out.length ? out[out.length - 1].l : 0, n: out.length };
+    let w = 0; while (performance.now() - BLE.data.t > 3500 || BLE.data.cadence < 30) { msg('Start pedalling (above 40 rpm)…'); this.phase = '…'; await wait(500); if (++w > 60) { this.running = false; Settings.set({ rawLog: raw }); this.result = { state: 'fail', msg: 'The bike isn\u2019t sending cadence. Check that Sport02 is connected and pedal a bit faster.' }; return this.render(); } }
+    const S = Settings.get(), lo = Math.max(1, Math.round(S.maxLevel * 0.1)), hi = Math.round(S.maxLevel * 0.75);
+    const phase = async (level, grade, label, secs, f0, f1) => {
+      this.phase = label; this.sendTest(level, grade); const out = [], t0 = performance.now();
+      while (performance.now() - t0 < secs * 1000) { await wait(250); const f = (performance.now() - t0) / (secs * 1000); prog(f0 + (f1 - f0) * f); msg(`${label}: ${BLE.bike?.protocol === 'ftms-sim' ? grade + ' % gradient' : 'level ' + level}. Pedal steadily.`); if (f > 0.4) { const d = BLE.data; if (d.cadence > 20) out.push({ p: d.power, c: d.cadence, l: d.level }); } if (Math.abs(f - 0.35) < 0.03) this.sendTest(level, grade); }
+      const n = out.length || 1; return { p: out.reduce((a, x) => a + x.p, 0) / n, c: out.reduce((a, x) => a + x.c, 0) / n, l: out.length ? out[out.length - 1].l : 0 };
     };
-    const A = await sample(lo, 'Light', 0), B = await sample(hi, 'Heavy', 0.45);
-    BLE.setLevel(S.flatLevel, true); prog(1);
-    const levelEcho = B.l && Math.abs(B.l - hi) <= 1 && Math.abs(A.l - lo) <= 1;
-    const perRev = (x) => x.c > 0 ? x.p / x.c : 0, ratio = perRev(A) > 0 ? perRev(B) / perRev(A) : 0;
-    BLE.addLog('··', `test ${BLE.bike.protocol}/${S.fsTable}: A L${lo}→bike ${A.l} ${A.p.toFixed(0)}W@${A.c.toFixed(0)} | B L${hi}→bike ${B.l} ${B.p.toFixed(0)}W@${B.c.toFixed(0)} | ratio ${ratio.toFixed(2)}`);
+    const A = await phase(lo, 0, 'LIGHT', 5, 0, 0.45), B = await phase(hi, 10, 'HEAVY', 6, 0.45, 1);
+    this.sendTest(S.flatLevel, 0); this.phase = 'done'; prog(1); Settings.set({ rawLog: raw });
+    const levelEcho = B.l && Math.abs(B.l - hi) <= 1;
+    const ratio = A.c > 0 && A.p > 0 ? (B.p / B.c) / (A.p / A.c) : 0; this.lastRatio = ratio;
+    BLE.addLog('··', `test ${this.methodLabel([BLE.bike.protocol, Settings.get().fsTable])}: L${lo} ${A.p.toFixed(0)}W@${A.c.toFixed(0)} bike L${A.l} | L${hi} ${B.p.toFixed(0)}W@${B.c.toFixed(0)} bike L${B.l} | watts/rev ratio ${ratio.toFixed(2)}`);
     this.running = false;
-    if (levelEcho || ratio > 1.25) {
-      this.result = { state: 'ok', msg: `✓ Resistance works (${BLE.bike.protocol === 'fitshow' ? 'FitShow' : 'FTMS'}${BLE.bike.protocol === 'fitshow' ? ' · ' + S.fsTable : ''}). ${levelEcho ? `The bike confirmed level ${lo} → ${hi}.` : `Watts per pedal stroke rose ×${ratio.toFixed(1)}.`} Did it feel heavier?` };
-    } else if (this.nextMethod()) {
-      this.result = null; msg('No change detected. Trying the next method…'); await wait(800); return this.runTest();
-    } else {
-      this.result = { state: 'fail', msg: 'Ascent couldn’t confirm a resistance change with any method. Copy the Bluetooth log and send it to Claude, or continue anyway.' };
-    }
+    this.result = levelEcho ? { state: 'ok', msg: `✓ The bike confirmed the level change (${lo} → ${hi}).` }
+      : { state: 'ask', msg: 'Did the pedals get noticeably heavier in the HEAVY phase?' };
     this.render();
+  },
+  confirmWorks() {
+    const S = Settings.get(); let note = '';
+    if (this.lastRatio && this.lastRatio > 0.85 && this.lastRatio < 1.15) { Settings.set({ powerSource: 'estimate' }); note = ' Your bike\u2019s watt reading ignores resistance, so Ascent now estimates watts from cadence and level.'; }
+    else if (this.lastRatio >= 1.15) Settings.set({ powerSource: 'bike' });
+    store.set('lastTest', { t: Date.now(), ok: true, protocol: BLE.bike?.protocol, table: S.fsTable });
+    BLE.addLog('··', 'resistance confirmed by rider: ' + this.methodLabel([BLE.bike?.protocol, S.fsTable]) + (note ? ' · power: estimate' : ''));
+    toast('Resistance method saved.' + note); this.go(3);
   }
 };
 

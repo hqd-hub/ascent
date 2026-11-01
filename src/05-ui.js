@@ -86,9 +86,9 @@ const App = {
     $$('.hrchip').forEach(c => c.onclick = () => { if (confirmLite('Disconnect ' + c.textContent.trim() + '?')) BLE.removeHR(c.dataset.id); });
     if (this.ride) this.hudDevices();
   },
-  async connectBike(showAll) {
-    if (BLE.bike?.server?.connected && !showAll) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return null; }
-    try { await BLE.connectBike(showAll); toast('Bike connected · control: ' + BLE.bike.protocol); return null; }
+  async connectBike(showAll, add) {
+    if (BLE.bike?.server?.connected && !showAll && !add) { if (confirmLite('Disconnect bike?')) BLE.disconnectBike(); return null; }
+    try { await BLE.connectBike(showAll); toast('Connected: ' + BLE.bike.name); return null; }
     catch (e) { const msg = bleErrorText(e); BLE.addLog('!!', e.name + ': ' + e.message); if (msg) toast(msg, 'err'); return msg; }
   },
   async connectHR() { try { const h = await BLE.connectHR(); toast('Heart rate: ' + h.name); return h; } catch (e) { BLE.addLog('!!', e.name + ': ' + e.message); toast(bleErrorText(e).replace('the bike', 'the device'), 'err'); } },
